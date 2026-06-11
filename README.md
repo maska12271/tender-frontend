@@ -1,34 +1,34 @@
 # Tender Frontend
 
-Tender Frontend is a React + Vite single‑page application that provides a dashboard UI for the TenderApp backend. It is focused on managing companies, clients, products, tenders, and orders through a clean, admin-style interface.[cite:1227][cite:1236]
+Tender Frontend is a React + Vite single‑page application that provides a dashboard UI for the TenderApp backend. It is focused on managing companies, clients, products, tenders, and orders through a clean, admin-style interface.
 
 ## Features
 
 - **Dashboard-style SPA**
-  - Modern React app with client-side routing via `react-router-dom`.[cite:1236]
+  - Modern React app with client-side routing via `react-router-dom`.
 - **Entity management**
   - Pages for listing and editing entities such as clients, products, categories, manufacturers, tenders, and orders (mirrors the backend domain).
 - **Reusable UI components**
   - Shared layout, table, and modal patterns for CRUD screens.
-  - Iconography via `lucide-react`.[cite:1236]
+  - Iconography via `lucide-react`.
 - **API integration**
   - Communicates with the Spring Boot backend over REST.
   - Centralized API helper module for HTTP calls.
 - **Styling**
-  - Tailwind CSS v4 via `@tailwindcss/vite` integration.[cite:1236]
+  - Tailwind CSS v4 via `@tailwindcss/vite` integration.
 - **Developer experience**
   - Vite dev server with fast HMR.
-  - ESLint configuration for React and hooks.[cite:1227][cite:1236]
+  - ESLint configuration for React and hooks.
 
 ## Tech Stack
 
-- React 19[cite:1236]
-- React DOM 19[cite:1236]
-- React Router DOM 7 for routing[cite:1236]
-- Vite 8 as build/dev tooling[cite:1236]
-- Tailwind CSS 4 + `@tailwindcss/vite` plugin[cite:1236]
-- Lucide React icons[cite:1236]
-- ESLint 10 with React + hooks plugins[cite:1236]
+- React 19
+- React DOM 19
+- React Router DOM 7 for routing
+- Vite 8 as build/dev tooling
+- Tailwind CSS 4 + `@tailwindcss/vite` plugin
+- Lucide React icons
+- ESLint 10 with React + hooks plugins
 
 ## Project Structure
 
@@ -132,7 +132,6 @@ From `package.json`:
   }
 }
 ```
-[cite:1236]
 
 - `npm run dev` – start dev server with HMR.
 - `npm run build` – create optimized production build.
