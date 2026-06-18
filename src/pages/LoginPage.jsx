@@ -1,9 +1,11 @@
 import { useState } from 'react'
 import { useNavigate, Navigate } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import { useAuth } from '../context/AuthContext'
 import { FormField } from '../components/FormField.jsx'
 
 export default function LoginPage() {
+    const { t } = useTranslation()
     const { login, isAuthenticated } = useAuth()
     const navigate = useNavigate()
 
@@ -24,7 +26,7 @@ export default function LoginPage() {
             await login(email.trim(), password)
             navigate('/dashboard', { replace: true })
         } catch (err) {
-            setError(err.message || 'Unable to sign in')
+            setError(err.message || t('login.error'))
         } finally {
             setLoading(false)
         }
@@ -38,7 +40,7 @@ export default function LoginPage() {
                         TenderSys
                     </h1>
                     <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
-                        Sign in to your company account
+                        {t('login.subtitle')}
                     </p>
                 </div>
 
@@ -51,7 +53,7 @@ export default function LoginPage() {
                 <form onSubmit={handleSubmit} className="space-y-5">
                     <FormField
                         id="login-email"
-                        label="Email"
+                        label={t('common.email')}
                         name="email"
                         type="email"
                         value={email}
@@ -63,7 +65,7 @@ export default function LoginPage() {
 
                     <FormField
                         id="login-password"
-                        label="Password"
+                        label={t('users.form.password')}
                         name="password"
                         type="password"
                         value={password}
@@ -78,12 +80,12 @@ export default function LoginPage() {
                         disabled={loading}
                         className="w-full rounded-xl bg-teal-600 px-4 py-3 font-medium text-white hover:bg-teal-700 disabled:opacity-60"
                     >
-                        {loading ? 'Signing in...' : 'Sign in'}
+                        {loading ? t('login.signingIn') : t('login.signIn')}
                     </button>
                 </form>
 
                 <p className="mt-6 text-center text-xs text-slate-400 dark:text-slate-500">
-                    Demo owner account: owner@demo.com / owner123
+                    {t('login.demo')}
                 </p>
             </div>
         </div>

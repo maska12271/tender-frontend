@@ -1,15 +1,42 @@
 import { useEffect, useMemo, useState } from 'react'
-import { apiDelete, apiGet, apiPost, apiPut } from '../api/client'
+import { useNavigate } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
+import { apiDelete, apiGet, apiPatch, apiPost, apiPut } from '../api/client'
 import PageHeader from '../components/PageHeader'
 import SearchFilters from '../components/SearchFilters'
 import DataTable from '../components/DataTable'
+import DataToolbar from '../components/DataToolbar'
+import StatusBadge from '../components/StatusBadge'
+import StatusPicker from '../components/StatusPicker'
 import ActionMenu from '../components/ActionMenu'
 import Modal from '../components/Modal'
 import ConfirmModal from '../components/ConfirmModal'
 import { useModal } from '../hooks/useModal'
+import { useQuickCreate } from '../hooks/useQuickCreate'
+import { usePermissions } from '../context/AuthContext'
+import QuickCreateModal from '../components/QuickCreateModal'
+import { useToast } from '../context/ToastContext'
 import { formatDate, formatMoney, safeArray } from '../utils/format'
-import {FormField, SelectField, TextareaField} from "../components/FormField.jsx";
+import {FormField, FormSelect, TextareaField} from "../components/FormField.jsx";
 import { Pencil, Trash2 } from 'lucide-react'
+
+const exportColumns = [
+    { header: 'ID', value: (r) => r.id },
+    { header: 'Order no.', value: (r) => r.orderNumber },
+    { header: 'Manufacturer', value: (r) => r.manufacturer?.name || '' },
+    { header: 'Status', value: (r) => r.status },
+    { header: 'Order date', value: (r) => r.orderDate },
+    { header: 'Closing date', value: (r) => r.closingDate },
+    { header: 'Expected delivery', value: (r) => r.expectedDeliveryDate },
+    { header: 'Delivery address', value: (r) => r.deliveryAddress },
+    { header: 'Delivery price', value: (r) => r.deliveryPrice },
+    { header: 'Total', value: (r) => r.totalAmount },
+    {
+        header: 'Items',
+        value: (r) => (r.items || []).map((it) => `${it.product?.name || '?'} x${it.quantity} @ ${it.unitPrice}`).join('; '),
+    },
+    { header: 'Notes', value: (r) => r.notes },
+]
 
 const emptyForm = {
     manufacturerId: '',
@@ -31,6 +58,11 @@ const emptyForm = {
 }
 
 export default function PurchaseOrdersPage() {
+    const { t } = useTranslation()
+    const { canCreate, canEdit, canDelete } = usePermissions('PURCHASE_ORDERS')
+    const navigate = useNavigate()
+    const toast = useToast()
+    const { quickCreate, openQuickCreate, closeQuickCreate, handleQuickCreated } = useQuickCreate()
     const formModal = useModal()
     const deleteModal = useModal()
     const bulkDeleteModal = useModal()
@@ -43,9 +75,10 @@ export default function PurchaseOrdersPage() {
     const [deletingItem, setDeletingItem] = useState(null)
     const [selectedIds, setSelectedIds] = useState([])
     const [search, setSearch] = useState('')
-    const [statusFilter, setStatusFilter] = useState('')
-    const [manufacturerFilter, setManufacturerFilter] = useState('')
+    const [statusFilter, setStatusFilter] = useState([])
+    const [manufacturerFilter, setManufacturerFilter] = useState([])
     const [loading, setLoading] = useState(false)
+    const [statusLoading, setStatusLoading] = useState({})
 
     useEffect(() => {
         loadData()
@@ -72,8 +105,8 @@ export default function PurchaseOrdersPage() {
                 row.manufacturer?.name?.toLowerCase().includes(q) ||
                 row.status?.toLowerCase().includes(q)
 
-            const matchesStatus = !statusFilter || row.status === statusFilter
-            const matchesManufacturer = !manufacturerFilter || String(row.manufacturer?.id) === manufacturerFilter
+            const matchesStatus = statusFilter.length === 0 || statusFilter.includes(row.status)
+            const matchesManufacturer = manufacturerFilter.length === 0 || manufacturerFilter.includes(String(row.manufacturer?.id))
 
             return matchesSearch && matchesStatus && matchesManufacturer
         })
@@ -166,6 +199,7 @@ export default function PurchaseOrdersPage() {
             } else {
                 await apiPost('/purchase-orders', payload)
             }
+            toast.success(editingId ? t('purchaseOrders.updated') : t('purchaseOrders.created'))
             formModal.close()
             setEditingId(null)
             setForm(emptyForm)
@@ -180,6 +214,7 @@ export default function PurchaseOrdersPage() {
         setLoading(true)
         try {
             await apiDelete(`/purchase-orders/${deletingItem.id}`)
+            toast.success(t('purchaseOrders.deleted'))
             deleteModal.close()
             setDeletingItem(null)
             setSelectedIds((prev) => prev.filter((id) => id !== deletingItem.id))
@@ -189,11 +224,25 @@ export default function PurchaseOrdersPage() {
         }
     }
 
+    const handleStatusChange = async (row, newStatus) => {
+        setStatusLoading((prev) => ({ ...prev, [row.id]: true }))
+        setRows((prev) => prev.map((r) => (r.id === row.id ? { ...r, status: newStatus } : r)))
+        try {
+            await apiPatch(`/purchase-orders/${row.id}/status`, { status: newStatus })
+            toast.success(t('toast.statusUpdated'))
+        } catch {
+            setRows((prev) => prev.map((r) => (r.id === row.id ? { ...r, status: row.status } : r)))
+        } finally {
+            setStatusLoading((prev) => ({ ...prev, [row.id]: false }))
+        }
+    }
+
     const handleBulkDelete = async () => {
         if (selectedIds.length === 0) return
         setLoading(true)
         try {
             await Promise.all(selectedIds.map((id) => apiDelete(`/purchase-orders/${id}`)))
+            toast.success(t('purchaseOrders.bulkDeleted', { count: selectedIds.length }))
             bulkDeleteModal.close()
             setSelectedIds([])
             await loadData()
@@ -203,36 +252,57 @@ export default function PurchaseOrdersPage() {
     }
 
     const columns = [
-        { key: 'orderNumber', label: 'Order no.' },
-        { key: 'manufacturer', label: 'Manufacturer', render: (row) => row.manufacturer?.name || '-' },
-        { key: 'status', label: 'Status' },
-        { key: 'orderDate', label: 'Order date', render: (row) => formatDate(row.orderDate) },
-        { key: 'totalAmount', label: 'Total', render: (row) => formatMoney(row.totalAmount) },
+        { key: 'orderNumber', label: t('purchaseOrders.cols.orderNo') },
+        { key: 'manufacturer', label: t('purchaseOrders.cols.manufacturer'), render: (row) => row.manufacturer?.name || '-' },
         {
+            key: 'status',
+            label: t('common.status'),
+            render: (row) => (
+                <span onClick={(e) => e.stopPropagation()}>
+                    <StatusPicker
+                        status={row.status}
+                        onSelect={canEdit ? (s) => handleStatusChange(row, s) : undefined}
+                        loading={!!statusLoading[row.id]}
+                    />
+                </span>
+            ),
+        },
+        { key: 'orderDate', label: t('purchaseOrders.cols.orderDate'), render: (row) => formatDate(row.orderDate) },
+        { key: 'totalAmount', label: t('common.total'), render: (row) => formatMoney(row.totalAmount) },
+        ...((canEdit || canDelete) ? [{
             key: 'actions',
             label: '',
             render: (row) => (
-                <div className="flex justify-end">
+                <div className="flex justify-end" onClick={(e) => e.stopPropagation()}>
                     <ActionMenu
                         actions={[
-                            { key: 'edit', label: 'Edit', icon: Pencil, onClick: () => openEdit(row) },
-                            { key: 'delete', label: 'Delete', icon: Trash2, danger: true, onClick: () => openDelete(row) },
+                            ...(canEdit ? [{ key: 'edit', label: t('common.edit'), icon: Pencil, onClick: () => openEdit(row) }] : []),
+                            ...(canDelete ? [{ key: 'delete', label: t('common.delete'), icon: Trash2, danger: true, onClick: () => openDelete(row) }] : []),
                         ]}
                     />
                 </div>
             ),
-        },
+        }] : []),
     ]
 
     return (
         <div className="space-y-6">
             <PageHeader
-                title="Purchase Orders"
-                description="Create and manage purchase orders."
+                title={t('purchaseOrders.title')}
+                description={t('purchaseOrders.description')}
                 action={
-                    <button onClick={openCreate} className="rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-teal-700">
-                        Add purchase order
-                    </button>
+                    <div className="flex flex-wrap items-center gap-2">
+                        <DataToolbar
+                            entityLabel="purchase-orders"
+                            exportColumns={exportColumns}
+                            rows={filteredRows}
+                        />
+                        {canCreate && (
+                            <button onClick={openCreate} className="rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-teal-700">
+                                {t('purchaseOrders.add')}
+                            </button>
+                        )}
+                    </div>
                 }
             />
 
@@ -244,91 +314,98 @@ export default function PurchaseOrdersPage() {
                         key: 'manufacturer',
                         value: manufacturerFilter,
                         onChange: setManufacturerFilter,
-                        options: [{ value: '', label: 'All manufacturers' }, ...manufacturers.map((m) => ({ value: String(m.id), label: m.name }))],
+                        placeholder: t('common.allManufacturers'),
+                        options: manufacturers.map((m) => ({ value: String(m.id), label: m.name })),
                     },
                     {
                         key: 'status',
                         value: statusFilter,
                         onChange: setStatusFilter,
+                        placeholder: t('common.allStatuses'),
                         options: [
-                            { value: '', label: 'All statuses' },
-                            { value: 'NEW', label: 'New' },
-                            { value: 'IN_PROGRESS', label: 'In progress' },
-                            { value: 'CONFIRMED', label: 'Confirmed' },
-                            { value: 'SHIPPED', label: 'Shipped' },
-                            { value: 'CLOSED', label: 'Closed' },
-                            { value: 'CANCELLED', label: 'Cancelled' },
+                            { value: 'NEW', label: t('statuses.NEW') },
+                            { value: 'IN_PROGRESS', label: t('statuses.IN_PROGRESS') },
+                            { value: 'CONFIRMED', label: t('statuses.CONFIRMED') },
+                            { value: 'SHIPPED', label: t('statuses.SHIPPED') },
+                            { value: 'CLOSED', label: t('statuses.CLOSED') },
+                            { value: 'CANCELLED', label: t('statuses.CANCELLED') },
                         ],
                     },
                 ]}
             />
 
             <DataTable
+                tableId="purchase-orders"
                 columns={columns}
                 rows={filteredRows}
-                selectable
+                onRowClick={(row) => navigate(`/purchase-orders/${row.id}`)}
+                selectable={canDelete}
                 selectedIds={selectedIds}
                 onSelectionChange={setSelectedIds}
                 bulkActions={
-                    <button
-                        onClick={bulkDeleteModal.open}
-                        className="inline-flex items-center gap-2 rounded-lg bg-rose-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-rose-700"
-                    >
-                        <Trash2 className="h-4 w-4" /> Delete selected
-                    </button>
+                    canDelete ? (
+                        <button
+                            onClick={bulkDeleteModal.open}
+                            className="inline-flex items-center gap-2 rounded-lg bg-rose-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-rose-700"
+                        >
+                            <Trash2 className="h-4 w-4" /> {t('common.deleteSelected')}
+                        </button>
+                    ) : null
                 }
             />
 
             <Modal
                 isOpen={formModal.isOpen}
-                title={editingId ? "Edit purchase order" : "Add purchase order"}
+                title={editingId ? t('purchaseOrders.editTitle') : t('purchaseOrders.addTitle')}
                 onClose={formModal.close}
             >
                 <form onSubmit={handleSubmit} className="space-y-5">
                     <div className="grid gap-4 md:grid-cols-2">
-                        <SelectField
+                        <FormSelect
                             id="purchase-order-manufacturer"
-                            label="Manufacturer"
+                            label={t('purchaseOrders.form.manufacturer')}
                             name="manufacturerId"
                             value={form.manufacturerId}
                             onChange={handleChange}
                             required
-                        >
-                            <option value="">Select manufacturer</option>
-                            {manufacturers.map((item) => (
-                                <option key={item.id} value={item.id}>
-                                    {item.name}
-                                </option>
-                            ))}
-                        </SelectField>
+                            searchable
+                            placeholder={t('purchaseOrders.form.selectManufacturer')}
+                            options={manufacturers.map((item) => ({ value: String(item.id), label: item.name }))}
+                            onQuickCreate={(name) => openQuickCreate('manufacturer', name, (item) => {
+                                setManufacturers((prev) => [...prev, item.raw])
+                                handleChange({ target: { name: 'manufacturerId', value: item.value } })
+                            })}
+                        />
 
                         <FormField
                             id="purchase-order-number"
-                            label="Order number"
+                            label={t('purchaseOrders.form.orderNumber')}
                             name="orderNumber"
                             value={form.orderNumber}
                             onChange={handleChange}
-                            placeholder="Order number"
+                            placeholder={t('purchaseOrders.form.orderNumber')}
                         />
 
-                        <SelectField
+                        <FormSelect
                             id="purchase-order-status"
-                            label="Status"
+                            label={t('common.status')}
                             name="status"
                             value={form.status}
                             onChange={handleChange}
-                        >
-                            <option value="NEW">New</option>
-                            <option value="IN_PROGRESS">In progress</option>
-                            <option value="CONFIRMED">Confirmed</option>
-                            <option value="SHIPPED">Shipped</option>
-                            <option value="CLOSED">Closed</option>
-                            <option value="CANCELLED">Cancelled</option>
-                        </SelectField>
+                            placeholder={t('purchaseOrders.form.selectStatus')}
+                            options={[
+                                { value: 'NEW', label: t('statuses.NEW') },
+                                { value: 'IN_PROGRESS', label: t('statuses.IN_PROGRESS') },
+                                { value: 'CONFIRMED', label: t('statuses.CONFIRMED') },
+                                { value: 'SHIPPED', label: t('statuses.SHIPPED') },
+                                { value: 'CLOSED', label: t('statuses.CLOSED') },
+                                { value: 'CANCELLED', label: t('statuses.CANCELLED') },
+                            ]}
+                        />
 
                         <FormField
                             id="purchase-order-date"
-                            label="Order date"
+                            label={t('purchaseOrders.form.orderDate')}
                             type="date"
                             name="orderDate"
                             value={form.orderDate}
@@ -337,7 +414,7 @@ export default function PurchaseOrdersPage() {
 
                         <FormField
                             id="purchase-order-closing-date"
-                            label="Closing date"
+                            label={t('purchaseOrders.form.closingDate')}
                             type="date"
                             name="closingDate"
                             value={form.closingDate}
@@ -346,7 +423,7 @@ export default function PurchaseOrdersPage() {
 
                         <FormField
                             id="purchase-order-expected-delivery"
-                            label="Expected delivery date"
+                            label={t('purchaseOrders.form.expectedDelivery')}
                             type="date"
                             name="expectedDeliveryDate"
                             value={form.expectedDeliveryDate}
@@ -355,44 +432,44 @@ export default function PurchaseOrdersPage() {
 
                         <FormField
                             id="purchase-order-delivery-price"
-                            label="Delivery price"
+                            label={t('purchaseOrders.form.deliveryPrice')}
                             type="number"
                             step="0.01"
                             name="deliveryPrice"
                             value={form.deliveryPrice}
                             onChange={handleChange}
-                            placeholder="Delivery price"
+                            placeholder={t('purchaseOrders.form.deliveryPrice')}
                         />
 
                         <FormField
                             id="purchase-order-delivery-address"
-                            label="Delivery address"
+                            label={t('purchaseOrders.form.deliveryAddress')}
                             name="deliveryAddress"
                             value={form.deliveryAddress}
                             onChange={handleChange}
-                            placeholder="Delivery address"
+                            placeholder={t('purchaseOrders.form.deliveryAddress')}
                         />
                     </div>
 
                     <TextareaField
                         id="purchase-order-notes"
-                        label="Notes"
+                        label={t('common.notes')}
                         name="notes"
                         value={form.notes}
                         onChange={handleChange}
-                        placeholder="Notes"
+                        placeholder={t('common.notes')}
                         rows={3}
                     />
 
                     <div className="space-y-3">
                         <div className="flex items-center justify-between">
-                            <h3 className="text-lg font-semibold">Order items</h3>
+                            <h3 className="text-lg font-semibold">{t('purchaseOrders.form.orderItems')}</h3>
                             <button
                                 type="button"
                                 onClick={addItem}
                                 className="rounded-lg bg-slate-800 px-3 py-2 text-sm font-medium text-white dark:bg-slate-700"
                             >
-                                Add item
+                                {t('purchaseOrders.form.addItem')}
                             </button>
                         </div>
 
@@ -401,46 +478,46 @@ export default function PurchaseOrdersPage() {
                                 key={index}
                                 className="grid gap-3 rounded-2xl border border-slate-200 p-4 md:grid-cols-[2fr_1fr_1fr_auto] dark:border-slate-800"
                             >
-                                <SelectField
+                                <FormSelect
                                     id={`purchase-order-item-product-${index}`}
-                                    label="Product"
+                                    label={t('purchaseOrders.form.product')}
                                     name={`productId-${index}`}
                                     value={item.productId}
                                     onChange={(e) => handleItemChange(index, "productId", e.target.value)}
                                     required
-                                >
-                                    <option value="">Select product</option>
-                                    {products.map((product) => (
-                                        <option key={product.id} value={product.id}>
-                                            {product.name}
-                                        </option>
-                                    ))}
-                                </SelectField>
+                                    searchable
+                                    placeholder={t('purchaseOrders.form.selectProduct')}
+                                    options={products.map((product) => ({ value: String(product.id), label: product.name }))}
+                                    onQuickCreate={(name) => openQuickCreate('product', name, (created) => {
+                                        setProducts((prev) => [...prev, created.raw])
+                                        handleItemChange(index, 'productId', created.value)
+                                    })}
+                                />
 
                                 <FormField
                                     id={`purchase-order-item-quantity-${index}`}
-                                    label="Quantity"
+                                    label={t('common.quantity')}
                                     type="number"
                                     name={`quantity-${index}`}
                                     value={item.quantity}
                                     onChange={(e) => handleItemChange(index, "quantity", e.target.value)}
-                                    placeholder="Qty"
+                                    placeholder={t('common.qty')}
                                 />
 
                                 <FormField
                                     id={`purchase-order-item-unit-price-${index}`}
-                                    label="Unit price"
+                                    label={t('orderDetail.cols.unitPrice')}
                                     type="number"
                                     step="0.01"
                                     name={`unitPrice-${index}`}
                                     value={item.unitPrice}
                                     onChange={(e) => handleItemChange(index, "unitPrice", e.target.value)}
-                                    placeholder="Unit price"
+                                    placeholder={t('orderDetail.cols.unitPrice')}
                                 />
 
                                 <div className="space-y-2">
                                     <label className="text-sm font-medium text-slate-700 opacity-0 dark:text-slate-200">
-                                        Remove
+                                        {t('common.remove')}
                                     </label>
                                     <button
                                         type="button"
@@ -448,7 +525,7 @@ export default function PurchaseOrdersPage() {
                                         disabled={form.items.length === 1}
                                         className="w-full rounded-xl bg-red-600 px-4 py-2.5 text-sm font-medium text-white disabled:opacity-50"
                                     >
-                                        Remove
+                                        {t('common.remove')}
                                     </button>
                                 </div>
                             </div>
@@ -461,14 +538,14 @@ export default function PurchaseOrdersPage() {
                             onClick={formModal.close}
                             className="rounded-xl border border-slate-300 px-4 py-2.5 dark:border-slate-700"
                         >
-                            Cancel
+                            {t('common.cancel')}
                         </button>
                         <button
                             type="submit"
                             disabled={loading}
                             className="rounded-xl bg-teal-600 px-4 py-2.5 font-medium text-white hover:bg-teal-700 disabled:opacity-60"
                         >
-                            {loading ? "Saving..." : editingId ? "Save changes" : "Create purchase order"}
+                            {loading ? t('common.saving') : editingId ? t('common.saveChanges') : t('purchaseOrders.createBtn')}
                         </button>
                     </div>
                 </form>
@@ -476,8 +553,8 @@ export default function PurchaseOrdersPage() {
 
             <ConfirmModal
                 isOpen={deleteModal.isOpen}
-                title="Delete purchase order"
-                message={`Delete "${deletingItem?.orderNumber || ''}"?`}
+                title={t('purchaseOrders.deleteTitle')}
+                message={t('purchaseOrders.deleteConfirm', { name: deletingItem?.orderNumber || '' })}
                 onClose={deleteModal.close}
                 onConfirm={handleDelete}
                 loading={loading}
@@ -485,11 +562,19 @@ export default function PurchaseOrdersPage() {
 
             <ConfirmModal
                 isOpen={bulkDeleteModal.isOpen}
-                title="Delete purchase orders"
-                message={`Delete ${selectedIds.length} selected purchase order${selectedIds.length === 1 ? '' : 's'}?`}
+                title={t('purchaseOrders.bulkDeleteTitle')}
+                message={t('purchaseOrders.bulkDeleteConfirm', { count: selectedIds.length })}
                 onClose={bulkDeleteModal.close}
                 onConfirm={handleBulkDelete}
                 loading={loading}
+            />
+
+            <QuickCreateModal
+                type={quickCreate?.type}
+                initialName={quickCreate?.name ?? ''}
+                isOpen={!!quickCreate}
+                onClose={closeQuickCreate}
+                onCreated={handleQuickCreated}
             />
         </div>
     )

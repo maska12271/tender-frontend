@@ -1,15 +1,33 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { apiDelete, apiGet, apiPost, apiPut } from '../api/client'
 import PageHeader from '../components/PageHeader'
 import SearchFilters from '../components/SearchFilters'
 import DataTable from '../components/DataTable'
+import DataToolbar from '../components/DataToolbar'
+import StatusBadge from '../components/StatusBadge'
 import ActionMenu from '../components/ActionMenu'
 import Modal from '../components/Modal'
 import { FormField, TextareaField } from "../components/FormField";
 import ConfirmModal from '../components/ConfirmModal'
 import { useModal } from '../hooks/useModal'
-import { safeArray } from '../utils/format'
+import { usePermissions } from '../context/AuthContext'
+import { useToast } from '../context/ToastContext'
+import { safeArray, parseBool } from '../utils/format'
 import { Pencil, Trash2 } from 'lucide-react'
+
+const exportColumns = [
+    { header: 'ID', value: (r) => r.id },
+    { header: 'Name', value: (r) => r.name },
+    { header: 'Description', value: (r) => r.description },
+    { header: 'Active', value: (r) => (r.active ? 'Active' : 'Inactive') },
+]
+
+const importColumns = [
+    { header: 'Name', required: true, example: 'Office Supplies' },
+    { header: 'Description', example: 'General office consumables' },
+    { header: 'Active', example: 'Active' },
+]
 
 const emptyForm = {
     name: '',
@@ -18,6 +36,20 @@ const emptyForm = {
 }
 
 export default function CategoriesPage() {
+    const { t } = useTranslation()
+    const { canCreate, canEdit, canDelete } = usePermissions('CATEGORIES')
+    const toast = useToast()
+    const parseImportRow = (r) => {
+        const name = (r['Name'] || '').trim()
+        if (!name) return { error: t('categories.import.nameRequired') }
+        return {
+            payload: {
+                name,
+                description: r['Description'] || '',
+                active: parseBool(r['Active'], true),
+            },
+        }
+    }
     const formModal = useModal()
     const deleteModal = useModal()
     const bulkDeleteModal = useModal()
@@ -28,7 +60,7 @@ export default function CategoriesPage() {
     const [deletingItem, setDeletingItem] = useState(null)
     const [selectedIds, setSelectedIds] = useState([])
     const [search, setSearch] = useState('')
-    const [statusFilter, setStatusFilter] = useState('')
+    const [statusFilter, setStatusFilter] = useState([])
     const [loading, setLoading] = useState(false)
 
     useEffect(() => {
@@ -49,9 +81,7 @@ export default function CategoriesPage() {
                 row.description?.toLowerCase().includes(q)
 
             const matchesStatus =
-                !statusFilter ||
-                (statusFilter === 'active' && row.active) ||
-                (statusFilter === 'inactive' && !row.active)
+                statusFilter.length === 0 || statusFilter.includes(row.active ? 'active' : 'inactive')
 
             return matchesSearch && matchesStatus
         })
@@ -92,6 +122,7 @@ export default function CategoriesPage() {
             } else {
                 await apiPost('/categories', form)
             }
+            toast.success(editingId ? t('categories.updated') : t('categories.created'))
             formModal.close()
             setEditingId(null)
             setForm(emptyForm)
@@ -106,6 +137,7 @@ export default function CategoriesPage() {
         setLoading(true)
         try {
             await apiDelete(`/categories/${deletingItem.id}`)
+            toast.success(t('categories.deleted'))
             deleteModal.close()
             setDeletingItem(null)
             setSelectedIds((prev) => prev.filter((id) => id !== deletingItem.id))
@@ -120,6 +152,7 @@ export default function CategoriesPage() {
         setLoading(true)
         try {
             await Promise.all(selectedIds.map((id) => apiDelete(`/categories/${id}`)))
+            toast.success(t('categories.bulkDeleted', { count: selectedIds.length }))
             bulkDeleteModal.close()
             setSelectedIds([])
             await loadData()
@@ -129,42 +162,54 @@ export default function CategoriesPage() {
     }
 
     const columns = [
-        { key: 'name', label: 'Name' },
-        { key: 'description', label: 'Description' },
+        { key: 'name', label: t('common.name') },
+        { key: 'description', label: t('common.description') },
         {
             key: 'active',
-            label: 'Status',
-            render: (row) => (
-                <span className={`rounded-full px-3 py-1 text-xs font-semibold ${row.active ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300'}`}>
-          {row.active ? 'Active' : 'Inactive'}
-        </span>
-            ),
+            label: t('common.status'),
+            render: (row) => <StatusBadge status={row.active ? 'ACTIVE' : 'INACTIVE'} />,
         },
-        {
+        ...((canEdit || canDelete) ? [{
             key: 'actions',
             label: '',
             render: (row) => (
                 <div className="flex justify-end">
                     <ActionMenu
                         actions={[
-                            { key: 'edit', label: 'Edit', icon: Pencil, onClick: () => openEdit(row) },
-                            { key: 'delete', label: 'Delete', icon: Trash2, danger: true, onClick: () => openDelete(row) },
+                            ...(canEdit ? [{ key: 'edit', label: t('common.edit'), icon: Pencil, onClick: () => openEdit(row) }] : []),
+                            ...(canDelete ? [{ key: 'delete', label: t('common.delete'), icon: Trash2, danger: true, onClick: () => openDelete(row) }] : []),
                         ]}
                     />
                 </div>
             ),
-        },
+        }] : []),
     ]
 
     return (
         <div className="space-y-6">
             <PageHeader
-                title="Categories"
-                description="Manage product categories."
+                title={t('categories.title')}
+                description={t('categories.description')}
                 action={
-                    <button onClick={openCreate} className="rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-teal-700">
-                        Add category
-                    </button>
+                    <div className="flex flex-wrap items-center gap-2">
+                        <DataToolbar
+                            entityLabel="categories"
+                            exportColumns={exportColumns}
+                            rows={filteredRows}
+                            importConfig={{
+                                canImport: canCreate,
+                                endpoint: '/categories',
+                                templateColumns: importColumns,
+                                parseRow: parseImportRow,
+                            }}
+                            onImported={loadData}
+                        />
+                        {canCreate && (
+                            <button onClick={openCreate} className="rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-teal-700">
+                                {t('categories.add')}
+                            </button>
+                        )}
+                    </div>
                 }
             />
 
@@ -176,51 +221,54 @@ export default function CategoriesPage() {
                         key: 'status',
                         value: statusFilter,
                         onChange: setStatusFilter,
+                        placeholder: t('common.allStatuses'),
                         options: [
-                            { value: '', label: 'All statuses' },
-                            { value: 'active', label: 'Active' },
-                            { value: 'inactive', label: 'Inactive' },
+                            { value: 'active', label: t('common.active') },
+                            { value: 'inactive', label: t('common.inactive') },
                         ],
                     },
                 ]}
             />
 
             <DataTable
+                tableId="categories"
                 columns={columns}
                 rows={filteredRows}
-                selectable
+                selectable={canDelete}
                 selectedIds={selectedIds}
                 onSelectionChange={setSelectedIds}
                 bulkActions={
-                    <button
-                        onClick={bulkDeleteModal.open}
-                        className="inline-flex items-center gap-2 rounded-lg bg-rose-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-rose-700"
-                    >
-                        <Trash2 className="h-4 w-4" /> Delete selected
-                    </button>
+                    canDelete ? (
+                        <button
+                            onClick={bulkDeleteModal.open}
+                            className="inline-flex items-center gap-2 rounded-lg bg-rose-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-rose-700"
+                        >
+                            <Trash2 className="h-4 w-4" /> {t('common.deleteSelected')}
+                        </button>
+                    ) : null
                 }
             />
 
-            <Modal isOpen={formModal.isOpen} title={editingId ? 'Edit category' : 'Add category'} onClose={formModal.close} width="max-w-2xl">
+            <Modal isOpen={formModal.isOpen} title={editingId ? t('categories.editTitle') : t('categories.addTitle')} onClose={formModal.close} width="max-w-2xl">
                 <form onSubmit={handleSubmit} className="grid gap-4">
                     <FormField
                         id="category-name"
-                        label="Name"
+                        label={t('common.name')}
                         name="name"
                         value={form.name}
                         onChange={handleChange}
                         required
-                        placeholder="Name"
+                        placeholder={t('common.name')}
                         className="md:col-span-2"
                     />
 
                     <TextareaField
                         id="category-description"
-                        label="Description"
+                        label={t('common.description')}
                         name="description"
                         value={form.description}
                         onChange={handleChange}
-                        placeholder="Description"
+                        placeholder={t('common.description')}
                         className="md:col-span-2"
                     />
                     <label className="md:col-span-2 inline-flex items-center gap-3 rounded-xl border border-slate-200 px-4 py-3 text-sm dark:border-slate-800">
@@ -231,13 +279,13 @@ export default function CategoriesPage() {
                             onChange={handleChange}
                             className="h-4 w-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500 dark:border-slate-700"
                         />
-                        <span className="font-medium text-slate-700 dark:text-slate-200">Active</span>
+                        <span className="font-medium text-slate-700 dark:text-slate-200">{t('common.active')}</span>
                     </label>
 
                     <div className="flex col-span-2 justify-end gap-3">
-                        <button type="button" onClick={formModal.close} className="rounded-xl border border-slate-300 px-4 py-2.5 dark:border-slate-700">Cancel</button>
+                        <button type="button" onClick={formModal.close} className="rounded-xl border border-slate-300 px-4 py-2.5 dark:border-slate-700">{t('common.cancel')}</button>
                         <button type="submit" disabled={loading} className="rounded-xl bg-teal-600 px-4 py-2.5 font-medium text-white hover:bg-teal-700 disabled:opacity-60">
-                            {loading ? 'Saving...' : editingId ? 'Save changes' : 'Create category'}
+                            {loading ? t('common.saving') : editingId ? t('common.saveChanges') : t('categories.createBtn')}
                         </button>
                     </div>
                 </form>
@@ -245,8 +293,8 @@ export default function CategoriesPage() {
 
             <ConfirmModal
                 isOpen={deleteModal.isOpen}
-                title="Delete category"
-                message={`Delete "${deletingItem?.name || ''}"?`}
+                title={t('categories.deleteTitle')}
+                message={t('categories.deleteConfirm', { name: deletingItem?.name || '' })}
                 onClose={deleteModal.close}
                 onConfirm={handleDelete}
                 loading={loading}
@@ -254,8 +302,8 @@ export default function CategoriesPage() {
 
             <ConfirmModal
                 isOpen={bulkDeleteModal.isOpen}
-                title="Delete categories"
-                message={`Delete ${selectedIds.length} selected categor${selectedIds.length === 1 ? 'y' : 'ies'}?`}
+                title={t('categories.bulkDeleteTitle')}
+                message={t('categories.bulkDeleteConfirm', { count: selectedIds.length })}
                 onClose={bulkDeleteModal.close}
                 onConfirm={handleBulkDelete}
                 loading={loading}

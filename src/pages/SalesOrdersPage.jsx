@@ -1,15 +1,41 @@
 import { useEffect, useMemo, useState } from 'react'
-import { apiDelete, apiGet, apiPost, apiPut } from '../api/client'
+import { useNavigate } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
+import { apiDelete, apiGet, apiPatch, apiPost, apiPut } from '../api/client'
 import PageHeader from '../components/PageHeader'
 import SearchFilters from '../components/SearchFilters'
 import DataTable from '../components/DataTable'
+import DataToolbar from '../components/DataToolbar'
+import StatusBadge from '../components/StatusBadge'
+import StatusPicker from '../components/StatusPicker'
 import ActionMenu from '../components/ActionMenu'
 import Modal from '../components/Modal'
 import ConfirmModal from '../components/ConfirmModal'
 import { useModal } from '../hooks/useModal'
+import { useQuickCreate } from '../hooks/useQuickCreate'
+import { usePermissions } from '../context/AuthContext'
+import QuickCreateModal from '../components/QuickCreateModal'
+import { useToast } from '../context/ToastContext'
 import { formatDate, formatMoney, safeArray } from '../utils/format'
-import {FormField, SelectField, TextareaField} from "../components/FormField.jsx";
+import {FormField, FormSelect, TextareaField} from "../components/FormField.jsx";
 import { Pencil, Trash2 } from 'lucide-react'
+
+const exportColumns = [
+    { header: 'ID', value: (r) => r.id },
+    { header: 'Order no.', value: (r) => r.orderNumber },
+    { header: 'Client', value: (r) => r.client?.name || '' },
+    { header: 'Status', value: (r) => r.status },
+    { header: 'Order date', value: (r) => r.orderDate },
+    { header: 'Closing date', value: (r) => r.closingDate },
+    { header: 'Delivery address', value: (r) => r.deliveryAddress },
+    { header: 'Delivery price', value: (r) => r.deliveryPrice },
+    { header: 'Total', value: (r) => r.totalAmount },
+    {
+        header: 'Items',
+        value: (r) => (r.items || []).map((it) => `${it.product?.name || '?'} x${it.quantity} @ ${it.unitPrice}`).join('; '),
+    },
+    { header: 'Notes', value: (r) => r.notes },
+]
 
 const emptyForm = {
     clientId: '',
@@ -31,6 +57,11 @@ const emptyForm = {
 }
 
 export default function SalesOrdersPage() {
+    const { t } = useTranslation()
+    const { canCreate, canEdit, canDelete } = usePermissions('SALES_ORDERS')
+    const navigate = useNavigate()
+    const toast = useToast()
+    const { quickCreate, openQuickCreate, closeQuickCreate, handleQuickCreated } = useQuickCreate()
     const formModal = useModal()
     const deleteModal = useModal()
     const bulkDeleteModal = useModal()
@@ -44,9 +75,10 @@ export default function SalesOrdersPage() {
     const [deletingItem, setDeletingItem] = useState(null)
     const [selectedIds, setSelectedIds] = useState([])
     const [search, setSearch] = useState('')
-    const [statusFilter, setStatusFilter] = useState('')
-    const [clientFilter, setClientFilter] = useState('')
+    const [statusFilter, setStatusFilter] = useState([])
+    const [clientFilter, setClientFilter] = useState([])
     const [loading, setLoading] = useState(false)
+    const [statusLoading, setStatusLoading] = useState({})
 
     useEffect(() => {
         loadData()
@@ -75,8 +107,8 @@ export default function SalesOrdersPage() {
                 row.client?.name?.toLowerCase().includes(q) ||
                 row.status?.toLowerCase().includes(q)
 
-            const matchesStatus = !statusFilter || row.status === statusFilter
-            const matchesClient = !clientFilter || String(row.client?.id) === clientFilter
+            const matchesStatus = statusFilter.length === 0 || statusFilter.includes(row.status)
+            const matchesClient = clientFilter.length === 0 || clientFilter.includes(String(row.client?.id))
 
             return matchesSearch && matchesStatus && matchesClient
         })
@@ -169,6 +201,7 @@ export default function SalesOrdersPage() {
             } else {
                 await apiPost('/sales-orders', payload)
             }
+            toast.success(editingId ? t('salesOrders.updated') : t('salesOrders.created'))
             formModal.close()
             setEditingId(null)
             setForm(emptyForm)
@@ -183,6 +216,7 @@ export default function SalesOrdersPage() {
         setLoading(true)
         try {
             await apiDelete(`/sales-orders/${deletingItem.id}`)
+            toast.success(t('salesOrders.deleted'))
             deleteModal.close()
             setDeletingItem(null)
             setSelectedIds((prev) => prev.filter((id) => id !== deletingItem.id))
@@ -192,11 +226,27 @@ export default function SalesOrdersPage() {
         }
     }
 
+    const handleStatusChange = async (row, newStatus) => {
+        setStatusLoading((prev) => ({ ...prev, [row.id]: true }))
+        // Optimistic update
+        setRows((prev) => prev.map((r) => (r.id === row.id ? { ...r, status: newStatus } : r)))
+        try {
+            await apiPatch(`/sales-orders/${row.id}/status`, { status: newStatus })
+            toast.success(t('toast.statusUpdated'))
+        } catch {
+            // Revert on failure
+            setRows((prev) => prev.map((r) => (r.id === row.id ? { ...r, status: row.status } : r)))
+        } finally {
+            setStatusLoading((prev) => ({ ...prev, [row.id]: false }))
+        }
+    }
+
     const handleBulkDelete = async () => {
         if (selectedIds.length === 0) return
         setLoading(true)
         try {
             await Promise.all(selectedIds.map((id) => apiDelete(`/sales-orders/${id}`)))
+            toast.success(t('salesOrders.bulkDeleted', { count: selectedIds.length }))
             bulkDeleteModal.close()
             setSelectedIds([])
             await loadData()
@@ -206,36 +256,57 @@ export default function SalesOrdersPage() {
     }
 
     const columns = [
-        { key: 'orderNumber', label: 'Order no.' },
-        { key: 'client', label: 'Client', render: (row) => row.client?.name || '-' },
-        { key: 'status', label: 'Status' },
-        { key: 'orderDate', label: 'Order date', render: (row) => formatDate(row.orderDate) },
-        { key: 'totalAmount', label: 'Total', render: (row) => formatMoney(row.totalAmount) },
+        { key: 'orderNumber', label: t('salesOrders.cols.orderNo') },
+        { key: 'client', label: t('salesOrders.cols.client'), render: (row) => row.client?.name || '-' },
         {
+            key: 'status',
+            label: t('common.status'),
+            render: (row) => (
+                <span onClick={(e) => e.stopPropagation()}>
+                    <StatusPicker
+                        status={row.status}
+                        onSelect={canEdit ? (s) => handleStatusChange(row, s) : undefined}
+                        loading={!!statusLoading[row.id]}
+                    />
+                </span>
+            ),
+        },
+        { key: 'orderDate', label: t('salesOrders.cols.orderDate'), render: (row) => formatDate(row.orderDate) },
+        { key: 'totalAmount', label: t('common.total'), render: (row) => formatMoney(row.totalAmount) },
+        ...((canEdit || canDelete) ? [{
             key: 'actions',
             label: '',
             render: (row) => (
-                <div className="flex justify-end">
+                <div className="flex justify-end" onClick={(e) => e.stopPropagation()}>
                     <ActionMenu
                         actions={[
-                            { key: 'edit', label: 'Edit', icon: Pencil, onClick: () => openEdit(row) },
-                            { key: 'delete', label: 'Delete', icon: Trash2, danger: true, onClick: () => openDelete(row) },
+                            ...(canEdit ? [{ key: 'edit', label: t('common.edit'), icon: Pencil, onClick: () => openEdit(row) }] : []),
+                            ...(canDelete ? [{ key: 'delete', label: t('common.delete'), icon: Trash2, danger: true, onClick: () => openDelete(row) }] : []),
                         ]}
                     />
                 </div>
             ),
-        },
+        }] : []),
     ]
 
     return (
         <div className="space-y-6">
             <PageHeader
-                title="Sales Orders"
-                description="Create and manage sales orders."
+                title={t('salesOrders.title')}
+                description={t('salesOrders.description')}
                 action={
-                    <button onClick={openCreate} className="rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-teal-700">
-                        Add sales order
-                    </button>
+                    <div className="flex flex-wrap items-center gap-2">
+                        <DataToolbar
+                            entityLabel="sales-orders"
+                            exportColumns={exportColumns}
+                            rows={filteredRows}
+                        />
+                        {canCreate && (
+                            <button onClick={openCreate} className="rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-teal-700">
+                                {t('salesOrders.add')}
+                            </button>
+                        )}
+                    </div>
                 }
             />
 
@@ -247,106 +318,109 @@ export default function SalesOrdersPage() {
                         key: 'client',
                         value: clientFilter,
                         onChange: setClientFilter,
-                        options: [{ value: '', label: 'All clients' }, ...clients.map((c) => ({ value: String(c.id), label: c.name }))],
+                        placeholder: t('common.allClients'),
+                        options: clients.map((c) => ({ value: String(c.id), label: c.name })),
                     },
                     {
                         key: 'status',
                         value: statusFilter,
                         onChange: setStatusFilter,
+                        placeholder: t('common.allStatuses'),
                         options: [
-                            { value: '', label: 'All statuses' },
-                            { value: 'NEW', label: 'New' },
-                            { value: 'IN_PROGRESS', label: 'In progress' },
-                            { value: 'CONFIRMED', label: 'Confirmed' },
-                            { value: 'SHIPPED', label: 'Shipped' },
-                            { value: 'CLOSED', label: 'Closed' },
-                            { value: 'CANCELLED', label: 'Cancelled' },
+                            { value: 'NEW', label: t('statuses.NEW') },
+                            { value: 'IN_PROGRESS', label: t('statuses.IN_PROGRESS') },
+                            { value: 'CONFIRMED', label: t('statuses.CONFIRMED') },
+                            { value: 'SHIPPED', label: t('statuses.SHIPPED') },
+                            { value: 'CLOSED', label: t('statuses.CLOSED') },
+                            { value: 'CANCELLED', label: t('statuses.CANCELLED') },
                         ],
                     },
                 ]}
             />
 
             <DataTable
+                tableId="sales-orders"
                 columns={columns}
                 rows={filteredRows}
-                selectable
+                onRowClick={(row) => navigate(`/sales-orders/${row.id}`)}
+                selectable={canDelete}
                 selectedIds={selectedIds}
                 onSelectionChange={setSelectedIds}
                 bulkActions={
-                    <button
-                        onClick={bulkDeleteModal.open}
-                        className="inline-flex items-center gap-2 rounded-lg bg-rose-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-rose-700"
-                    >
-                        <Trash2 className="h-4 w-4" /> Delete selected
-                    </button>
+                    canDelete ? (
+                        <button
+                            onClick={bulkDeleteModal.open}
+                            className="inline-flex items-center gap-2 rounded-lg bg-rose-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-rose-700"
+                        >
+                            <Trash2 className="h-4 w-4" /> {t('common.deleteSelected')}
+                        </button>
+                    ) : null
                 }
             />
 
             <Modal
                 isOpen={formModal.isOpen}
-                title={editingId ? "Edit sales order" : "Add sales order"}
+                title={editingId ? t('salesOrders.editTitle') : t('salesOrders.addTitle')}
                 onClose={formModal.close}
             >
                 <form onSubmit={handleSubmit} className="space-y-5">
                     <div className="grid gap-4 md:grid-cols-2">
-                        <SelectField
+                        <FormSelect
                             id="sales-order-client"
-                            label="Client"
+                            label={t('salesOrders.form.client')}
                             name="clientId"
                             value={form.clientId}
                             onChange={handleChange}
                             required
-                        >
-                            <option value="">Select client</option>
-                            {clients.map((item) => (
-                                <option key={item.id} value={item.id}>
-                                    {item.name}
-                                </option>
-                            ))}
-                        </SelectField>
+                            searchable
+                            placeholder={t('salesOrders.form.selectClient')}
+                            options={clients.map((item) => ({ value: String(item.id), label: item.name }))}
+                            onQuickCreate={(name) => openQuickCreate('client', name, (item) => {
+                                setClients((prev) => [...prev, item.raw])
+                                handleChange({ target: { name: 'clientId', value: item.value } })
+                            })}
+                        />
 
-                        <SelectField
+                        <FormSelect
                             id="sales-order-tender"
-                            label="Tender"
+                            label={t('salesOrders.form.tender')}
                             name="tenderId"
                             value={form.tenderId}
                             onChange={handleChange}
-                        >
-                            <option value="">No tender</option>
-                            {tenders.map((item) => (
-                                <option key={item.id} value={item.id}>
-                                    {item.title}
-                                </option>
-                            ))}
-                        </SelectField>
+                            searchable
+                            placeholder={t('salesOrders.form.noTender')}
+                            options={tenders.map((item) => ({ value: String(item.id), label: item.title }))}
+                        />
 
                         <FormField
                             id="sales-order-number"
-                            label="Order number"
+                            label={t('salesOrders.form.orderNumber')}
                             name="orderNumber"
                             value={form.orderNumber}
                             onChange={handleChange}
-                            placeholder="Order number"
+                            placeholder={t('salesOrders.form.orderNumber')}
                         />
 
-                        <SelectField
+                        <FormSelect
                             id="sales-order-status"
-                            label="Status"
+                            label={t('common.status')}
                             name="status"
                             value={form.status}
                             onChange={handleChange}
-                        >
-                            <option value="NEW">New</option>
-                            <option value="IN_PROGRESS">In progress</option>
-                            <option value="CONFIRMED">Confirmed</option>
-                            <option value="SHIPPED">Shipped</option>
-                            <option value="CLOSED">Closed</option>
-                            <option value="CANCELLED">Canceled</option>
-                        </SelectField>
+                            placeholder={t('salesOrders.form.selectStatus')}
+                            options={[
+                                { value: 'NEW', label: t('statuses.NEW') },
+                                { value: 'IN_PROGRESS', label: t('statuses.IN_PROGRESS') },
+                                { value: 'CONFIRMED', label: t('statuses.CONFIRMED') },
+                                { value: 'SHIPPED', label: t('statuses.SHIPPED') },
+                                { value: 'CLOSED', label: t('statuses.CLOSED') },
+                                { value: 'CANCELLED', label: t('statuses.CANCELLED') },
+                            ]}
+                        />
 
                         <FormField
                             id="sales-order-date"
-                            label="Order date"
+                            label={t('salesOrders.form.orderDate')}
                             type="date"
                             name="orderDate"
                             value={form.orderDate}
@@ -355,7 +429,7 @@ export default function SalesOrdersPage() {
 
                         <FormField
                             id="sales-order-closing-date"
-                            label="Closing date"
+                            label={t('salesOrders.form.closingDate')}
                             type="date"
                             name="closingDate"
                             value={form.closingDate}
@@ -364,44 +438,44 @@ export default function SalesOrdersPage() {
 
                         <FormField
                             id="sales-order-delivery-price"
-                            label="Delivery price"
+                            label={t('salesOrders.form.deliveryPrice')}
                             type="number"
                             step="0.01"
                             name="deliveryPrice"
                             value={form.deliveryPrice}
                             onChange={handleChange}
-                            placeholder="Delivery price"
+                            placeholder={t('salesOrders.form.deliveryPrice')}
                         />
 
                         <FormField
                             id="sales-order-delivery-address"
-                            label="Delivery address"
+                            label={t('salesOrders.form.deliveryAddress')}
                             name="deliveryAddress"
                             value={form.deliveryAddress}
                             onChange={handleChange}
-                            placeholder="Delivery address"
+                            placeholder={t('salesOrders.form.deliveryAddress')}
                         />
                     </div>
 
                     <TextareaField
                         id="sales-order-notes"
-                        label="Notes"
+                        label={t('common.notes')}
                         name="notes"
                         value={form.notes}
                         onChange={handleChange}
-                        placeholder="Notes"
+                        placeholder={t('common.notes')}
                         rows={3}
                     />
 
                     <div className="space-y-3">
                         <div className="flex items-center justify-between">
-                            <h3 className="text-lg font-semibold">Order items</h3>
+                            <h3 className="text-lg font-semibold">{t('salesOrders.form.orderItems')}</h3>
                             <button
                                 type="button"
                                 onClick={addItem}
                                 className="rounded-lg bg-slate-800 px-3 py-2 text-sm font-medium text-white dark:bg-slate-700"
                             >
-                                Add item
+                                {t('salesOrders.form.addItem')}
                             </button>
                         </div>
 
@@ -410,46 +484,46 @@ export default function SalesOrdersPage() {
                                 key={index}
                                 className="grid gap-3 rounded-2xl border border-slate-200 p-4 md:grid-cols-[2fr_1fr_1fr_auto] dark:border-slate-800"
                             >
-                                <SelectField
+                                <FormSelect
                                     id={`sales-order-item-product-${index}`}
-                                    label="Product"
+                                    label={t('salesOrders.form.product')}
                                     name={`productId-${index}`}
                                     value={item.productId}
                                     onChange={(e) => handleItemChange(index, "productId", e.target.value)}
                                     required
-                                >
-                                    <option value="">Select product</option>
-                                    {products.map((product) => (
-                                        <option key={product.id} value={product.id}>
-                                            {product.name}
-                                        </option>
-                                    ))}
-                                </SelectField>
+                                    searchable
+                                    placeholder={t('salesOrders.form.selectProduct')}
+                                    options={products.map((product) => ({ value: String(product.id), label: product.name }))}
+                                    onQuickCreate={(name) => openQuickCreate('product', name, (created) => {
+                                        setProducts((prev) => [...prev, created.raw])
+                                        handleItemChange(index, 'productId', created.value)
+                                    })}
+                                />
 
                                 <FormField
                                     id={`sales-order-item-quantity-${index}`}
-                                    label="Quantity"
+                                    label={t('common.quantity')}
                                     type="number"
                                     name={`quantity-${index}`}
                                     value={item.quantity}
                                     onChange={(e) => handleItemChange(index, "quantity", e.target.value)}
-                                    placeholder="Qty"
+                                    placeholder={t('common.qty')}
                                 />
 
                                 <FormField
                                     id={`sales-order-item-unit-price-${index}`}
-                                    label="Unit price"
+                                    label={t('orderDetail.cols.unitPrice')}
                                     type="number"
                                     step="0.01"
                                     name={`unitPrice-${index}`}
                                     value={item.unitPrice}
                                     onChange={(e) => handleItemChange(index, "unitPrice", e.target.value)}
-                                    placeholder="Unit price"
+                                    placeholder={t('orderDetail.cols.unitPrice')}
                                 />
 
                                 <div className="space-y-2">
                                     <label className="text-sm font-medium text-slate-700 opacity-0 dark:text-slate-200">
-                                        Remove
+                                        {t('common.remove')}
                                     </label>
                                     <button
                                         type="button"
@@ -457,7 +531,7 @@ export default function SalesOrdersPage() {
                                         disabled={form.items.length === 1}
                                         className="w-full rounded-xl bg-red-600 px-4 py-2.5 text-sm font-medium text-white disabled:opacity-50"
                                     >
-                                        Remove
+                                        {t('common.remove')}
                                     </button>
                                 </div>
                             </div>
@@ -470,14 +544,14 @@ export default function SalesOrdersPage() {
                             onClick={formModal.close}
                             className="rounded-xl border border-slate-300 px-4 py-2.5 dark:border-slate-700"
                         >
-                            Cancel
+                            {t('common.cancel')}
                         </button>
                         <button
                             type="submit"
                             disabled={loading}
                             className="rounded-xl bg-teal-600 px-4 py-2.5 font-medium text-white hover:bg-teal-700 disabled:opacity-60"
                         >
-                            {loading ? "Saving..." : editingId ? "Save changes" : "Create sales order"}
+                            {loading ? t('common.saving') : editingId ? t('common.saveChanges') : t('salesOrders.createBtn')}
                         </button>
                     </div>
                 </form>
@@ -485,8 +559,8 @@ export default function SalesOrdersPage() {
 
             <ConfirmModal
                 isOpen={deleteModal.isOpen}
-                title="Delete sales order"
-                message={`Delete "${deletingItem?.orderNumber || ''}"?`}
+                title={t('salesOrders.deleteTitle')}
+                message={t('salesOrders.deleteConfirm', { name: deletingItem?.orderNumber || '' })}
                 onClose={deleteModal.close}
                 onConfirm={handleDelete}
                 loading={loading}
@@ -494,11 +568,19 @@ export default function SalesOrdersPage() {
 
             <ConfirmModal
                 isOpen={bulkDeleteModal.isOpen}
-                title="Delete sales orders"
-                message={`Delete ${selectedIds.length} selected sales order${selectedIds.length === 1 ? '' : 's'}?`}
+                title={t('salesOrders.bulkDeleteTitle')}
+                message={t('salesOrders.bulkDeleteConfirm', { count: selectedIds.length })}
                 onClose={bulkDeleteModal.close}
                 onConfirm={handleBulkDelete}
                 loading={loading}
+            />
+
+            <QuickCreateModal
+                type={quickCreate?.type}
+                initialName={quickCreate?.name ?? ''}
+                isOpen={!!quickCreate}
+                onClose={closeQuickCreate}
+                onCreated={handleQuickCreated}
             />
         </div>
     )

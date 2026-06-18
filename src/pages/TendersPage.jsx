@@ -1,14 +1,21 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { apiDelete, apiGet, apiPost, apiPut } from '../api/client'
 import PageHeader from '../components/PageHeader'
 import SearchFilters from '../components/SearchFilters'
 import DataTable from '../components/DataTable'
+import DataToolbar from '../components/DataToolbar'
+import StatusBadge from '../components/StatusBadge'
 import ActionMenu from '../components/ActionMenu'
 import Modal from '../components/Modal'
 import ConfirmModal from '../components/ConfirmModal'
 import { useModal } from '../hooks/useModal'
+import { useQuickCreate } from '../hooks/useQuickCreate'
+import { usePermissions } from '../context/AuthContext'
+import QuickCreateModal from '../components/QuickCreateModal'
+import { useToast } from '../context/ToastContext'
 import { formatDate, formatMoney, safeArray } from '../utils/format'
-import {FormField, SelectField, TextareaField} from "../components/FormField.jsx";
+import {FormField, FormSelect, TextareaField} from "../components/FormField.jsx";
 import { Pencil, Trash2, Users } from 'lucide-react'
 
 const emptyTenderForm = {
@@ -30,7 +37,24 @@ const emptyParticipantForm = {
     winner: false,
 }
 
+const exportColumns = [
+    { header: 'ID', value: (r) => r.id },
+    { header: 'Title', value: (r) => r.title },
+    { header: 'Tender no.', value: (r) => r.tenderNumber },
+    { header: 'Customer', value: (r) => r.customerName },
+    { header: 'Client', value: (r) => r.clientName },
+    { header: 'Status', value: (r) => r.status },
+    { header: 'Published', value: (r) => r.publishedAt },
+    { header: 'Deadline', value: (r) => r.deadline },
+    { header: 'Estimated value', value: (r) => r.estimatedValue },
+    { header: 'Description', value: (r) => r.description },
+]
+
 export default function TendersPage() {
+    const { t } = useTranslation()
+    const { canCreate, canEdit, canDelete } = usePermissions('TENDERS')
+    const toast = useToast()
+    const { quickCreate, openQuickCreate, closeQuickCreate, handleQuickCreated } = useQuickCreate()
     const formModal = useModal()
     const deleteModal = useModal()
     const bulkDeleteModal = useModal()
@@ -52,7 +76,7 @@ export default function TendersPage() {
     const [selectedIds, setSelectedIds] = useState([])
     const [selectedParticipantIds, setSelectedParticipantIds] = useState([])
     const [search, setSearch] = useState('')
-    const [statusFilter, setStatusFilter] = useState('')
+    const [statusFilter, setStatusFilter] = useState([])
     const [loading, setLoading] = useState(false)
 
     useEffect(() => {
@@ -83,7 +107,7 @@ export default function TendersPage() {
                 row.customerName?.toLowerCase().includes(q) ||
                 row.clientName?.toLowerCase().includes(q)
 
-            const matchesStatus = !statusFilter || row.status === statusFilter
+            const matchesStatus = statusFilter.length === 0 || statusFilter.includes(row.status)
 
             return matchesSearch && matchesStatus
         })
@@ -180,6 +204,7 @@ export default function TendersPage() {
             } else {
                 await apiPost('/tenders', payload)
             }
+            toast.success(editingId ? t('tenders.updated') : t('tenders.created'))
             formModal.close()
             setEditingId(null)
             setForm(emptyTenderForm)
@@ -194,6 +219,7 @@ export default function TendersPage() {
         setLoading(true)
         try {
             await apiDelete(`/tenders/${deletingItem.id}`)
+            toast.success(t('tenders.deleted'))
             deleteModal.close()
             setDeletingItem(null)
             setSelectedIds((prev) => prev.filter((id) => id !== deletingItem.id))
@@ -208,6 +234,7 @@ export default function TendersPage() {
         setLoading(true)
         try {
             await Promise.all(selectedIds.map((id) => apiDelete(`/tenders/${id}`)))
+            toast.success(t('tenders.bulkDeleted', { count: selectedIds.length }))
             bulkDeleteModal.close()
             setSelectedIds([])
             await loadData()
@@ -235,6 +262,7 @@ export default function TendersPage() {
                 await apiPost(`/tenders/${selectedTender.id}/participants`, payload)
             }
 
+            toast.success(editingParticipantId ? t('tenders.participants.updated') : t('tenders.participants.added'))
             participantFormModal.close()
             setEditingParticipantId(null)
             setParticipantForm(emptyParticipantForm)
@@ -249,6 +277,7 @@ export default function TendersPage() {
         setLoading(true)
         try {
             await apiDelete(`/tenders/${selectedTender.id}/participants/${deletingParticipant.id}`)
+            toast.success(t('tenders.participants.deleted'))
             participantDeleteModal.close()
             setDeletingParticipant(null)
             setSelectedParticipantIds((prev) => prev.filter((id) => id !== deletingParticipant.id))
@@ -267,6 +296,7 @@ export default function TendersPage() {
                     apiDelete(`/tenders/${selectedTender.id}/participants/${id}`)
                 )
             )
+            toast.success(t('tenders.participants.bulkDeleted', { count: selectedParticipantIds.length }))
             participantBulkDeleteModal.close()
             setSelectedParticipantIds([])
             await loadParticipants(selectedTender.id)
@@ -276,13 +306,13 @@ export default function TendersPage() {
     }
 
     const columns = [
-        { key: 'title', label: 'Title' },
-        { key: 'tenderNumber', label: 'Tender no.' },
-        { key: 'customerName', label: 'Customer' },
-        { key: 'clientName', label: 'Client' },
-        { key: 'status', label: 'Status' },
-        { key: 'deadline', label: 'Deadline', render: (row) => formatDate(row.deadline) },
-        { key: 'estimatedValue', label: 'Estimated value', render: (row) => formatMoney(row.estimatedValue) },
+        { key: 'title', label: t('tenders.cols.title') },
+        { key: 'tenderNumber', label: t('tenders.cols.tenderNo') },
+        { key: 'customerName', label: t('tenders.cols.customer') },
+        { key: 'clientName', label: t('tenders.cols.client') },
+        { key: 'status', label: t('common.status'), render: (row) => <StatusBadge status={row.status} /> },
+        { key: 'deadline', label: t('tenders.cols.deadline'), render: (row) => formatDate(row.deadline) },
+        { key: 'estimatedValue', label: t('tenders.cols.estimatedValue'), render: (row) => formatMoney(row.estimatedValue) },
         {
             key: 'actions',
             label: '',
@@ -290,9 +320,9 @@ export default function TendersPage() {
                 <div className="flex justify-end">
                     <ActionMenu
                         actions={[
-                            { key: 'edit', label: 'Edit', icon: Pencil, onClick: () => openEdit(row) },
-                            { key: 'participants', label: 'Participants', icon: Users, onClick: () => openParticipants(row) },
-                            { key: 'delete', label: 'Delete', icon: Trash2, danger: true, onClick: () => openDelete(row) },
+                            ...(canEdit ? [{ key: 'edit', label: t('common.edit'), icon: Pencil, onClick: () => openEdit(row) }] : []),
+                            { key: 'participants', label: t('tenders.participants.title'), icon: Users, onClick: () => openParticipants(row) },
+                            ...(canDelete ? [{ key: 'delete', label: t('common.delete'), icon: Trash2, danger: true, onClick: () => openDelete(row) }] : []),
                         ]}
                     />
                 </div>
@@ -303,12 +333,21 @@ export default function TendersPage() {
     return (
         <div className="space-y-6">
             <PageHeader
-                title="Tenders"
-                description="Manage tenders and final participant offers."
+                title={t('tenders.title')}
+                description={t('tenders.description')}
                 action={
-                    <button onClick={openCreate} className="rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-teal-700">
-                        Add tender
-                    </button>
+                    <div className="flex flex-wrap items-center gap-2">
+                        <DataToolbar
+                            entityLabel="tenders"
+                            exportColumns={exportColumns}
+                            rows={filteredRows}
+                        />
+                        {canCreate && (
+                            <button onClick={openCreate} className="rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-teal-700">
+                                {t('tenders.add')}
+                            </button>
+                        )}
+                    </div>
                 }
             />
 
@@ -320,243 +359,92 @@ export default function TendersPage() {
                         key: 'status',
                         value: statusFilter,
                         onChange: setStatusFilter,
+                        placeholder: t('common.allStatuses'),
                         options: [
-                            { value: '', label: 'All statuses' },
-                            { value: 'OPEN', label: 'Open' },
-                            { value: 'PUBLISHED', label: 'Published' },
-                            { value: 'IN_PROGRESS', label: 'In progress' },
-                            { value: 'CLOSED', label: 'Closed' },
-                            { value: 'CANCELLED', label: 'Cancelled' },
+                            { value: 'OPEN', label: t('statuses.OPEN') },
+                            { value: 'PUBLISHED', label: t('statuses.PUBLISHED') },
+                            { value: 'IN_PROGRESS', label: t('statuses.IN_PROGRESS') },
+                            { value: 'CLOSED', label: t('statuses.CLOSED') },
+                            { value: 'CANCELLED', label: t('statuses.CANCELLED') },
                         ],
                     },
                 ]}
             />
 
             <DataTable
+                tableId="tenders"
                 columns={columns}
                 rows={filteredRows}
-                selectable
+                selectable={canDelete}
                 selectedIds={selectedIds}
                 onSelectionChange={setSelectedIds}
                 bulkActions={
-                    <button
-                        onClick={bulkDeleteModal.open}
-                        className="inline-flex items-center gap-2 rounded-lg bg-rose-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-rose-700"
-                    >
-                        <Trash2 className="h-4 w-4" /> Delete selected
-                    </button>
+                    canDelete ? (
+                        <button
+                            onClick={bulkDeleteModal.open}
+                            className="inline-flex items-center gap-2 rounded-lg bg-rose-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-rose-700"
+                        >
+                            <Trash2 className="h-4 w-4" /> {t('common.deleteSelected')}
+                        </button>
+                    ) : null
                 }
             />
 
-            <Modal isOpen={formModal.isOpen} title={editingId ? 'Edit tender' : 'Add tender'} onClose={formModal.close}>
-                <form onSubmit={handleSubmit} className="grid gap-4 md:grid-cols-2">
-                    <div className="space-y-2 md:col-span-2">
-                        <label htmlFor="tenderTitle" className="text-sm font-medium text-slate-700 dark:text-slate-200">
-                            Title
-                        </label>
-                        <input
-                            id="tenderTitle"
-                            name="title"
-                            value={form.title}
-                            onChange={handleChange}
-                            required
-                            placeholder="Tender title"
-                            className="w-full rounded-xl border border-slate-300 px-4 py-2.5 dark:border-slate-700 dark:bg-slate-950"
-                        />
-                    </div>
-
-                    <div className="space-y-2">
-                        <label htmlFor="tenderNumber" className="text-sm font-medium text-slate-700 dark:text-slate-200">
-                            Tender number
-                        </label>
-                        <input
-                            id="tenderNumber"
-                            name="tenderNumber"
-                            value={form.tenderNumber}
-                            onChange={handleChange}
-                            placeholder="Tender number"
-                            className="w-full rounded-xl border border-slate-300 px-4 py-2.5 dark:border-slate-700 dark:bg-slate-950"
-                        />
-                    </div>
-
-                    <div className="space-y-2">
-                        <label htmlFor="customerName" className="text-sm font-medium text-slate-700 dark:text-slate-200">
-                            Customer name
-                        </label>
-                        <input
-                            id="customerName"
-                            name="customerName"
-                            value={form.customerName}
-                            onChange={handleChange}
-                            placeholder="Customer name"
-                            className="w-full rounded-xl border border-slate-300 px-4 py-2.5 dark:border-slate-700 dark:bg-slate-950"
-                        />
-                    </div>
-
-                    <div className="space-y-2">
-                        <label htmlFor="clientId" className="text-sm font-medium text-slate-700 dark:text-slate-200">
-                            Client
-                        </label>
-                        <select
-                            id="clientId"
-                            name="clientId"
-                            value={form.clientId}
-                            onChange={handleChange}
-                            required
-                            className="w-full rounded-xl border border-slate-300 px-4 py-2.5 dark:border-slate-700 dark:bg-slate-950"
-                        >
-                            <option value="">Select client</option>
-                            {clients.map((item) => (
-                                <option key={item.id} value={item.id}>
-                                    {item.name}
-                                </option>
-                            ))}
-                        </select>
-                    </div>
-
-                    <div className="space-y-2">
-                        <label htmlFor="tenderStatus" className="text-sm font-medium text-slate-700 dark:text-slate-200">
-                            Status
-                        </label>
-                        <select
-                            id="tenderStatus"
-                            name="status"
-                            value={form.status}
-                            onChange={handleChange}
-                            className="w-full rounded-xl border border-slate-300 px-4 py-2.5 dark:border-slate-700 dark:bg-slate-950"
-                        >
-                            <option value="OPEN">Open</option>
-                            <option value="PUBLISHED">Published</option>
-                            <option value="IN_PROGRESS">In progress</option>
-                            <option value="CLOSED">Closed</option>
-                            <option value="CANCELLED">Cancelled</option>
-                        </select>
-                    </div>
-
-                    <div className="space-y-2">
-                        <label htmlFor="estimatedValue" className="text-sm font-medium text-slate-700 dark:text-slate-200">
-                            Estimated value
-                        </label>
-                        <input
-                            id="estimatedValue"
-                            type="number"
-                            step="0.01"
-                            min="0"
-                            name="estimatedValue"
-                            value={form.estimatedValue}
-                            onChange={handleChange}
-                            placeholder="Estimated value"
-                            className="w-full rounded-xl border border-slate-300 px-4 py-2.5 dark:border-slate-700 dark:bg-slate-950"
-                        />
-                    </div>
-
-                    <div className="space-y-2">
-                        <label htmlFor="publishedAt" className="text-sm font-medium text-slate-700 dark:text-slate-200">
-                            Published at
-                        </label>
-                        <input
-                            id="publishedAt"
-                            type="date"
-                            name="publishedAt"
-                            value={form.publishedAt}
-                            onChange={handleChange}
-                            className="w-full rounded-xl border border-slate-300 px-4 py-2.5 dark:border-slate-700 dark:bg-slate-950"
-                        />
-                    </div>
-
-                    <div className="space-y-2">
-                        <label htmlFor="deadline" className="text-sm font-medium text-slate-700 dark:text-slate-200">
-                            Deadline
-                        </label>
-                        <input
-                            id="deadline"
-                            type="date"
-                            name="deadline"
-                            value={form.deadline}
-                            onChange={handleChange}
-                            className="w-full rounded-xl border border-slate-300 px-4 py-2.5 dark:border-slate-700 dark:bg-slate-950"
-                        />
-                    </div>
-
-                    <div className="space-y-2 md:col-span-2">
-                        <label htmlFor="tenderDescription" className="text-sm font-medium text-slate-700 dark:text-slate-200">
-                            Description
-                        </label>
-                        <textarea
-                            id="tenderDescription"
-                            name="description"
-                            value={form.description}
-                            onChange={handleChange}
-                            placeholder="Description"
-                            rows="5"
-                            className="w-full rounded-xl border border-slate-300 px-4 py-2.5 dark:border-slate-700 dark:bg-slate-950"
-                        />
-                    </div>
-
-                    <div className="md:col-span-2 flex justify-end gap-3">
-                        <button type="button" onClick={formModal.close} className="rounded-xl border border-slate-300 px-4 py-2.5 dark:border-slate-700">
-                            Cancel
-                        </button>
-                        <button type="submit" disabled={loading} className="rounded-xl bg-teal-600 px-4 py-2.5 font-medium text-white hover:bg-teal-700 disabled:opacity-60">
-                            {loading ? 'Saving...' : editingId ? 'Save changes' : 'Create tender'}
-                        </button>
-                    </div>
-                </form>
-            </Modal>
-
             <Modal
                 isOpen={participantsModal.isOpen}
-                title={selectedTender ? `Participants: ${selectedTender.title}` : 'Participants'}
+                title={selectedTender ? t('tenders.participants.titleFor', { title: selectedTender.title }) : t('tenders.participants.title')}
                 onClose={participantsModal.close}
                 width="max-w-5xl"
             >
                 <div className="space-y-5">
-                    <div className="flex justify-end">
-                        <button onClick={openParticipantCreate} className="rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-teal-700">
-                            Add participant
-                        </button>
-                    </div>
+                    {canEdit && (
+                        <div className="flex justify-end">
+                            <button onClick={openParticipantCreate} className="rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-teal-700">
+                                {t('tenders.participants.add')}
+                            </button>
+                        </div>
+                    )}
 
                     <DataTable
+                        tableId="tender-participants"
+                        paginate={false}
                         columns={[
-                            { key: 'manufacturerName', label: 'Name' },
-                            { key: 'offeredPrice', label: 'Offered price', render: (row) => formatMoney(row.offeredPrice) },
-                            { key: 'notes', label: 'Notes' },
+                            { key: 'manufacturerName', label: t('tenders.participants.name') },
+                            { key: 'offeredPrice', label: t('tenders.participants.offeredPrice'), render: (row) => formatMoney(row.offeredPrice) },
+                            { key: 'notes', label: t('common.notes') },
                             {
                                 key: 'winner',
-                                label: 'Winner',
-                                render: (row) => (
-                                    <span className={`rounded-full px-3 py-1 text-xs font-semibold ${row.winner ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300'}`}>
-                    {row.winner ? 'Winner' : 'No'}
-                  </span>
-                                ),
+                                label: t('tenders.participants.winner'),
+                                render: (row) => (row.winner ? <StatusBadge status="WINNER" /> : <span className="text-slate-400">—</span>),
                             },
-                            {
+                            ...(canEdit ? [{
                                 key: 'actions',
                                 label: '',
                                 render: (row) => (
                                     <div className="flex justify-end">
                                         <ActionMenu
                                             actions={[
-                                                { key: 'edit', label: 'Edit', icon: Pencil, onClick: () => openParticipantEdit(row) },
-                                                { key: 'delete', label: 'Delete', icon: Trash2, danger: true, onClick: () => openParticipantDelete(row) },
+                                                { key: 'edit', label: t('common.edit'), icon: Pencil, onClick: () => openParticipantEdit(row) },
+                                                { key: 'delete', label: t('common.delete'), icon: Trash2, danger: true, onClick: () => openParticipantDelete(row) },
                                             ]}
                                         />
                                     </div>
                                 ),
-                            },
+                            }] : []),
                         ]}
                         rows={participants}
-                        selectable
+                        selectable={canEdit}
                         selectedIds={selectedParticipantIds}
                         onSelectionChange={setSelectedParticipantIds}
                         bulkActions={
-                            <button
-                                onClick={participantBulkDeleteModal.open}
-                                className="inline-flex items-center gap-2 rounded-lg bg-rose-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-rose-700"
-                            >
-                                <Trash2 className="h-4 w-4" /> Delete selected
-                            </button>
+                            canEdit ? (
+                                <button
+                                    onClick={participantBulkDeleteModal.open}
+                                    className="inline-flex items-center gap-2 rounded-lg bg-rose-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-rose-700"
+                                >
+                                    <Trash2 className="h-4 w-4" /> Delete selected
+                                </button>
+                            ) : null
                         }
                     />
                 </div>
@@ -564,84 +452,86 @@ export default function TendersPage() {
 
             <Modal
                 isOpen={formModal.isOpen}
-                title={editingId ? "Edit tender" : "Add tender"}
+                title={editingId ? t('tenders.editTitle') : t('tenders.addTitle')}
                 onClose={formModal.close}
             >
                 <form onSubmit={handleSubmit} className="grid gap-4 md:grid-cols-2">
                     <FormField
                         id="tender-title"
-                        label="Title"
+                        label={t('tenders.form.title')}
                         name="title"
                         value={form.title}
                         onChange={handleChange}
                         required
-                        placeholder="Tender title"
+                        placeholder={t('tenders.form.titlePlaceholder')}
                         className="md:col-span-2"
                     />
 
                     <FormField
                         id="tender-number"
-                        label="Tender number"
+                        label={t('tenders.form.tenderNumber')}
                         name="tenderNumber"
                         value={form.tenderNumber}
                         onChange={handleChange}
-                        placeholder="Tender number"
+                        placeholder={t('tenders.form.tenderNumber')}
                     />
 
                     <FormField
                         id="tender-customer-name"
-                        label="Customer name"
+                        label={t('tenders.form.customerName')}
                         name="customerName"
                         value={form.customerName}
                         onChange={handleChange}
-                        placeholder="Customer name"
+                        placeholder={t('tenders.form.customerName')}
                     />
 
-                    <SelectField
+                    <FormSelect
                         id="tender-client"
-                        label="Client"
+                        label={t('tenders.form.client')}
                         name="clientId"
                         value={form.clientId}
                         onChange={handleChange}
                         required
-                    >
-                        <option value="">Select client</option>
-                        {clients.map((item) => (
-                            <option key={item.id} value={item.id}>
-                                {item.name}
-                            </option>
-                        ))}
-                    </SelectField>
+                        searchable
+                        placeholder={t('tenders.form.selectClient')}
+                        options={clients.map((item) => ({ value: String(item.id), label: item.name }))}
+                        onQuickCreate={(name) => openQuickCreate('client', name, (item) => {
+                            setClients((prev) => [...prev, item.raw])
+                            handleChange({ target: { name: 'clientId', value: item.value } })
+                        })}
+                    />
 
-                    <SelectField
+                    <FormSelect
                         id="tender-status"
-                        label="Status"
+                        label={t('common.status')}
                         name="status"
                         value={form.status}
                         onChange={handleChange}
-                    >
-                        <option value="OPEN">Open</option>
-                        <option value="PUBLISHED">Published</option>
-                        <option value="IN_PROGRESS">In progress</option>
-                        <option value="CLOSED">Closed</option>
-                        <option value="CANCELLED">Cancelled</option>
-                    </SelectField>
+                        placeholder={t('tenders.form.selectStatus')}
+                        options={[
+                            { value: 'OPEN', label: t('statuses.OPEN') },
+                            { value: 'PUBLISHED', label: t('statuses.PUBLISHED') },
+                            { value: 'IN_PROGRESS', label: t('statuses.IN_PROGRESS') },
+                            { value: 'CLOSED', label: t('statuses.CLOSED') },
+                            { value: 'CANCELLED', label: t('statuses.CANCELLED') },
+                        ]}
+                    />
 
                     <FormField
                         id="tender-estimated-value"
-                        label="Estimated value"
+                        label={t('tenders.form.estimatedValue')}
                         type="number"
                         step="0.01"
                         min="0"
                         name="estimatedValue"
                         value={form.estimatedValue}
                         onChange={handleChange}
-                        placeholder="Estimated value"
+                        placeholder={t('tenders.form.estimatedValue')}
                     />
 
                     <FormField
                         id="tender-published-at"
-                        label="Published at"
+                        label={t('tenders.form.publishedAt')}
                         type="date"
                         name="publishedAt"
                         value={form.publishedAt}
@@ -650,7 +540,7 @@ export default function TendersPage() {
 
                     <FormField
                         id="tender-deadline"
-                        label="Deadline"
+                        label={t('tenders.form.deadline')}
                         type="date"
                         name="deadline"
                         value={form.deadline}
@@ -659,11 +549,11 @@ export default function TendersPage() {
 
                     <TextareaField
                         id="tender-description"
-                        label="Description"
+                        label={t('common.description')}
                         name="description"
                         value={form.description}
                         onChange={handleChange}
-                        placeholder="Description"
+                        placeholder={t('common.description')}
                         rows={5}
                         className="md:col-span-2"
                     />
@@ -674,14 +564,14 @@ export default function TendersPage() {
                             onClick={formModal.close}
                             className="rounded-xl border border-slate-300 px-4 py-2.5 dark:border-slate-700"
                         >
-                            Cancel
+                            {t('common.cancel')}
                         </button>
                         <button
                             type="submit"
                             disabled={loading}
                             className="rounded-xl bg-teal-600 px-4 py-2.5 font-medium text-white hover:bg-teal-700 disabled:opacity-60"
                         >
-                            {loading ? "Saving..." : editingId ? "Save changes" : "Create tender"}
+                            {loading ? t('common.saving') : editingId ? t('common.saveChanges') : t('tenders.createBtn')}
                         </button>
                     </div>
                 </form>
@@ -689,8 +579,8 @@ export default function TendersPage() {
 
             <ConfirmModal
                 isOpen={deleteModal.isOpen}
-                title="Delete tender"
-                message={`Delete "${deletingItem?.title || ''}"?`}
+                title={t('tenders.deleteTitle')}
+                message={t('tenders.deleteConfirm', { name: deletingItem?.title || '' })}
                 onClose={deleteModal.close}
                 onConfirm={handleDelete}
                 loading={loading}
@@ -698,8 +588,8 @@ export default function TendersPage() {
 
             <ConfirmModal
                 isOpen={participantDeleteModal.isOpen}
-                title="Delete participant"
-                message={`Delete participant "${deletingParticipant?.manufacturerName || ''}"?`}
+                title={t('tenders.participants.deleteTitle')}
+                message={t('tenders.participants.deleteConfirm', { name: deletingParticipant?.manufacturerName || '' })}
                 onClose={participantDeleteModal.close}
                 onConfirm={handleParticipantDelete}
                 loading={loading}
@@ -707,8 +597,8 @@ export default function TendersPage() {
 
             <ConfirmModal
                 isOpen={bulkDeleteModal.isOpen}
-                title="Delete tenders"
-                message={`Delete ${selectedIds.length} selected tender${selectedIds.length === 1 ? '' : 's'}?`}
+                title={t('tenders.bulkDeleteTitle')}
+                message={t('tenders.bulkDeleteConfirm', { count: selectedIds.length })}
                 onClose={bulkDeleteModal.close}
                 onConfirm={handleBulkDelete}
                 loading={loading}
@@ -716,11 +606,19 @@ export default function TendersPage() {
 
             <ConfirmModal
                 isOpen={participantBulkDeleteModal.isOpen}
-                title="Delete participants"
-                message={`Delete ${selectedParticipantIds.length} selected participant${selectedParticipantIds.length === 1 ? '' : 's'}?`}
+                title={t('tenders.participants.bulkDeleteTitle')}
+                message={t('tenders.participants.bulkDeleteConfirm', { count: selectedParticipantIds.length })}
                 onClose={participantBulkDeleteModal.close}
                 onConfirm={handleParticipantBulkDelete}
                 loading={loading}
+            />
+
+            <QuickCreateModal
+                type={quickCreate?.type}
+                initialName={quickCreate?.name ?? ''}
+                isOpen={!!quickCreate}
+                onClose={closeQuickCreate}
+                onCreated={handleQuickCreated}
             />
         </div>
     )

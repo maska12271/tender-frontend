@@ -1,6 +1,8 @@
+import { useTranslation } from 'react-i18next'
 import Modal from './Modal'
 
 export default function ConfirmModal({ isOpen, title, message, onClose, onConfirm, loading }) {
+    const { t } = useTranslation()
     return (
         <Modal isOpen={isOpen} title={title} onClose={onClose} width="max-w-lg">
             <div className="space-y-5">
@@ -10,14 +12,14 @@ export default function ConfirmModal({ isOpen, title, message, onClose, onConfir
                         onClick={onClose}
                         className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-medium dark:border-slate-700"
                     >
-                        Cancel
+                        {t('confirm.cancel')}
                     </button>
                     <button
                         onClick={onConfirm}
                         disabled={loading}
                         className="rounded-xl bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-60"
                     >
-                        {loading ? 'Deleting...' : 'Delete'}
+                        {loading ? t('confirm.deleting') : t('confirm.delete')}
                     </button>
                 </div>
             </div>

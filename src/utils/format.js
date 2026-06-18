@@ -19,3 +19,19 @@ export function safeArray(value) {
 export function isActiveStatus(status) {
     return ['NEW', 'OPEN', 'IN_PROGRESS', 'PUBLISHED', 'CONFIRMED'].includes(String(status || '').toUpperCase())
 }
+
+// Lenient parsers used when importing user-supplied CSV cells.
+export function parseBool(value, fallback = true) {
+    if (value == null || value === '') return fallback
+    const v = String(value).trim().toLowerCase()
+    if (['true', 'yes', 'y', '1', 'active'].includes(v)) return true
+    if (['false', 'no', 'n', '0', 'inactive', 'archived'].includes(v)) return false
+    return fallback
+}
+
+export function toNumber(value, fallback = 0) {
+    if (value == null || value === '') return fallback
+    const cleaned = String(value).replace(/[^0-9.-]/g, '')
+    const n = Number(cleaned)
+    return Number.isFinite(n) ? n : fallback
+}

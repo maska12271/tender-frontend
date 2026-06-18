@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { useTranslation } from 'react-i18next'
 
 function getFocusableElements(container) {
     if (!container) return []
@@ -10,6 +11,7 @@ function getFocusableElements(container) {
 }
 
 export default function Modal({ isOpen, title, children, onClose, width = 'max-w-3xl' }) {
+    const { t } = useTranslation()
     const dialogRef = useRef(null)
     const lastActiveElementRef = useRef(null)
 
@@ -95,7 +97,7 @@ export default function Modal({ isOpen, title, children, onClose, width = 'max-w
                         onClick={onClose}
                         className="rounded-xl px-3 py-2 text-sm font-medium text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800"
                     >
-                        Close
+                        {t('common.close')}
                     </button>
                 </div>
 

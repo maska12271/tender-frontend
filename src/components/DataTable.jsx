@@ -1,7 +1,33 @@
-import { useEffect, useRef } from 'react'
-import { X } from 'lucide-react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import { X, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, SlidersHorizontal } from 'lucide-react'
 
-function SelectAllCheckbox({ checked, indeterminate, disabled, onChange }) {
+const PAGE_SIZE_OPTIONS = [10, 25, 50, 100]
+
+// Per-table column-visibility preferences are persisted in localStorage (per browser) keyed by
+// the table's `tableId`, so a user's choices survive reloads and navigation.
+const COLUMN_PREF_PREFIX = 'tableColumns:'
+
+function loadHiddenColumns(tableId) {
+    if (!tableId || typeof localStorage === 'undefined') return []
+    try {
+        const raw = localStorage.getItem(COLUMN_PREF_PREFIX + tableId)
+        const parsed = raw ? JSON.parse(raw) : []
+        return Array.isArray(parsed) ? parsed : []
+    } catch {
+        return []
+    }
+}
+
+// A column shows in the picker unless it opts out (hideable: false) and as long as it has a
+// human-readable name. Pass `name` for columns whose `label` is empty/JSX (e.g. the image column).
+function pickerName(column) {
+    if (column.hideable === false) return null
+    if (column.name) return column.name
+    return typeof column.label === 'string' && column.label ? column.label : null
+}
+
+function SelectAllCheckbox({ checked, indeterminate, disabled, onChange, label }) {
     const ref = useRef(null)
 
     useEffect(() => {
@@ -17,10 +43,25 @@ function SelectAllCheckbox({ checked, indeterminate, disabled, onChange }) {
             checked={checked}
             disabled={disabled}
             onChange={onChange}
-            aria-label="Select all rows"
-            className="h-4 w-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500 disabled:opacity-40 dark:border-slate-600 dark:bg-slate-900"
+            aria-label={label}
+            className="block h-4 w-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500 disabled:opacity-40 dark:border-slate-600 dark:bg-slate-900"
         />
     )
+}
+
+/** Builds a compact list of page numbers with ellipses, e.g. [1, '…', 4, 5, 6, '…', 12]. */
+function getPageWindow(current, total) {
+    if (total <= 7) {
+        return Array.from({ length: total }, (_, i) => i + 1)
+    }
+    const pages = [1]
+    const left = Math.max(2, current - 1)
+    const right = Math.min(total - 1, current + 1)
+    if (left > 2) pages.push('…')
+    for (let i = left; i <= right; i++) pages.push(i)
+    if (right < total - 1) pages.push('…')
+    pages.push(total)
+    return pages
 }
 
 export default function DataTable({
@@ -32,16 +73,73 @@ export default function DataTable({
     getRowId = (row) => row.id,
     isRowSelectable = () => true,
     bulkActions = null,
+    paginate = true,
+    initialPageSize = 10,
+    onRowClick = null,
+    // Drops the outer card chrome (border/rounded/background) so the table can be embedded inside
+    // another container that already provides it, e.g. a dashboard widget frame.
+    bare = false,
+    // When set, enables the persisted column-visibility picker, keyed by this id in localStorage.
+    tableId = null,
+    // Optional controlled pagination. When provided, these override the internal state so a
+    // parent can persist the current page/size (e.g. in the URL) across navigation.
+    page: controlledPage,
+    pageSize: controlledPageSize,
+    onPageChange,
+    onPageSizeChange,
 }) {
+    const { t } = useTranslation()
+    const [internalPage, setInternalPage] = useState(1)
+    const [internalPageSize, setInternalPageSize] = useState(initialPageSize)
+    const [hiddenColumns, setHiddenColumns] = useState(() => loadHiddenColumns(tableId))
+
+    const hideableColumns = columns
+        .map((c) => ({ key: c.key, name: pickerName(c) }))
+        .filter((c) => c.name)
+    const visibleColumns = columns.filter((c) => !hiddenColumns.includes(c.key))
+
+    const persistHidden = (next) => {
+        setHiddenColumns(next)
+        if (!tableId || typeof localStorage === 'undefined') return
+        try {
+            if (next.length === 0) localStorage.removeItem(COLUMN_PREF_PREFIX + tableId)
+            else localStorage.setItem(COLUMN_PREF_PREFIX + tableId, JSON.stringify(next))
+        } catch {
+            /* ignore quota/serialization errors */
+        }
+    }
+
+    const toggleColumn = (key) =>
+        persistHidden(hiddenColumns.includes(key) ? hiddenColumns.filter((k) => k !== key) : [...hiddenColumns, key])
+    const resetColumns = () => persistHidden([])
+
+    const page = controlledPage ?? internalPage
+    const pageSize = controlledPageSize ?? internalPageSize
+    const setPage = (next) => (onPageChange ? onPageChange(next) : setInternalPage(next))
+    const setPageSize = (next) => (onPageSizeChange ? onPageSizeChange(next) : setInternalPageSize(next))
+
+    const total = rows.length
+    const totalPages = paginate ? Math.max(1, Math.ceil(total / pageSize)) : 1
+
+    // Keep the current page in range when the row set shrinks (filters, deletes).
+    useEffect(() => {
+        if (page > totalPages) setPage(totalPages)
+    }, [page, totalPages])
+
+    const safePage = Math.min(page, totalPages)
+    const start = paginate ? (safePage - 1) * pageSize : 0
+    const pageRows = paginate ? rows.slice(start, start + pageSize) : rows
+
     const selectionEnabled = selectable && typeof onSelectionChange === 'function'
 
-    const selectableRowIds = selectionEnabled
-        ? rows.filter(isRowSelectable).map(getRowId)
+    // "Select all" acts on the rows visible on the current page.
+    const pageSelectableIds = selectionEnabled
+        ? pageRows.filter(isRowSelectable).map(getRowId)
         : []
     const selectedSet = new Set(selectedIds)
-    const visibleSelectedCount = selectableRowIds.filter((id) => selectedSet.has(id)).length
-    const allSelected = selectableRowIds.length > 0 && visibleSelectedCount === selectableRowIds.length
-    const someSelected = visibleSelectedCount > 0 && !allSelected
+    const pageSelectedCount = pageSelectableIds.filter((id) => selectedSet.has(id)).length
+    const allSelected = pageSelectableIds.length > 0 && pageSelectedCount === pageSelectableIds.length
+    const someSelected = pageSelectedCount > 0 && !allSelected
 
     const toggleRow = (id) => {
         const next = new Set(selectedIds)
@@ -54,21 +152,34 @@ export default function DataTable({
     }
 
     const toggleAll = () => {
+        const next = new Set(selectedIds)
         if (allSelected) {
-            const visible = new Set(selectableRowIds)
-            onSelectionChange(selectedIds.filter((id) => !visible.has(id)))
+            pageSelectableIds.forEach((id) => next.delete(id))
         } else {
-            const next = new Set(selectedIds)
-            selectableRowIds.forEach((id) => next.add(id))
-            onSelectionChange(Array.from(next))
+            pageSelectableIds.forEach((id) => next.add(id))
         }
+        onSelectionChange(Array.from(next))
     }
 
-    const totalColumns = columns.length + (selectionEnabled ? 1 : 0)
+    // A row is clickable as a whole (e.g. navigate to a detail page), but cells often contain their
+    // own interactive controls — action menus, status pickers, checkboxes, links. A click on any of
+    // those must not also fire the row navigation, so we ignore clicks originating inside one.
+    const INTERACTIVE_SELECTOR = 'button, a, input, select, textarea, label, [role="menu"], [role="menuitem"]'
+    const handleRowClick = onRowClick
+        ? (event, row) => {
+            if (event.target.closest(INTERACTIVE_SELECTOR)) return
+            onRowClick(row)
+        }
+        : undefined
+
+    const totalColumns = visibleColumns.length + (selectionEnabled ? 1 : 0)
     const showBulkBar = selectionEnabled && selectedIds.length > 0
+    const showColumnPicker = tableId && hideableColumns.length > 0
+    const rangeStart = total === 0 ? 0 : start + 1
+    const rangeEnd = Math.min(start + pageSize, total)
 
     return (
-        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
+        <div className={bare ? '' : 'overflow-hidden rounded-2xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900'}>
             {showBulkBar && (
                 <div className="flex flex-wrap items-center justify-between gap-3 border-b border-teal-200 bg-teal-50 px-4 py-3 dark:border-teal-900/60 dark:bg-teal-950/30">
                     <div className="flex items-center gap-3">
@@ -76,15 +187,26 @@ export default function DataTable({
                             type="button"
                             onClick={() => onSelectionChange([])}
                             className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-teal-700 transition hover:bg-teal-100 dark:text-teal-300 dark:hover:bg-teal-900/50"
-                            aria-label="Clear selection"
+                            aria-label={t('table.clearSelection')}
                         >
                             <X className="h-4 w-4" />
                         </button>
                         <span className="text-sm font-semibold text-teal-800 dark:text-teal-200">
-                            {selectedIds.length} selected
+                            {t('table.selected', { count: selectedIds.length })}
                         </span>
                     </div>
                     <div className="flex flex-wrap items-center gap-2">{bulkActions}</div>
+                </div>
+            )}
+
+            {showColumnPicker && (
+                <div className="flex justify-end border-b border-slate-200 px-4 py-2 dark:border-slate-800">
+                    <ColumnPicker
+                        columns={hideableColumns}
+                        hiddenColumns={hiddenColumns}
+                        onToggle={toggleColumn}
+                        onReset={resetColumns}
+                    />
                 </div>
             )}
 
@@ -97,12 +219,13 @@ export default function DataTable({
                                 <SelectAllCheckbox
                                     checked={allSelected}
                                     indeterminate={someSelected}
-                                    disabled={selectableRowIds.length === 0}
+                                    disabled={pageSelectableIds.length === 0}
                                     onChange={toggleAll}
+                                    label={t('table.selectAll')}
                                 />
                             </th>
                         )}
-                        {columns.map((column) => (
+                        {visibleColumns.map((column) => (
                             <th
                                 key={column.key}
                                 className="whitespace-nowrap px-4 py-3 text-left font-semibold text-slate-600 dark:text-slate-300"
@@ -113,39 +236,40 @@ export default function DataTable({
                     </tr>
                     </thead>
                     <tbody>
-                    {rows.length === 0 ? (
+                    {total === 0 ? (
                         <tr>
                             <td colSpan={totalColumns} className="px-4 py-12 text-center text-slate-500 dark:text-slate-400">
-                                No data found.
+                                {t('table.noData')}
                             </td>
                         </tr>
                     ) : (
-                        rows.map((row, index) => {
+                        pageRows.map((row, index) => {
                             const rowId = getRowId(row)
                             const rowSelectable = selectionEnabled && isRowSelectable(row)
                             const isSelected = rowSelectable && selectedSet.has(rowId)
                             return (
                                 <tr
                                     key={rowId ?? index}
+                                    onClick={handleRowClick ? (event) => handleRowClick(event, row) : undefined}
                                     className={`border-t border-slate-200 dark:border-slate-800 ${
                                         isSelected ? 'bg-teal-50/60 dark:bg-teal-950/20' : ''
-                                    }`}
+                                    } ${onRowClick ? 'cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/50' : ''}`}
                                 >
                                     {selectionEnabled && (
-                                        <td className="w-12 px-4 py-3 align-top">
+                                        <td className="w-12 px-4 py-3 align-middle" onClick={(e) => e.stopPropagation()}>
                                             {rowSelectable && (
                                                 <input
                                                     type="checkbox"
                                                     checked={isSelected}
                                                     onChange={() => toggleRow(rowId)}
-                                                    aria-label="Select row"
-                                                    className="h-4 w-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500 dark:border-slate-600 dark:bg-slate-900"
+                                                    aria-label={t('table.selectRow')}
+                                                    className="block h-4 w-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500 dark:border-slate-600 dark:bg-slate-900"
                                                 />
                                             )}
                                         </td>
                                     )}
-                                    {columns.map((column) => (
-                                        <td key={column.key} className="px-4 py-3 align-top text-slate-700 dark:text-slate-200">
+                                    {visibleColumns.map((column) => (
+                                        <td key={column.key} className="whitespace-nowrap px-4 py-3 align-middle text-slate-700 dark:text-slate-200">
                                             {column.render ? column.render(row) : row[column.key]}
                                         </td>
                                     ))}
@@ -156,6 +280,191 @@ export default function DataTable({
                     </tbody>
                 </table>
             </div>
+
+            {paginate && total > 0 && (
+                <div className="flex flex-col gap-3 border-t border-slate-200 px-4 py-3 dark:border-slate-800 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="text-sm text-slate-500 dark:text-slate-400">
+                        {t('table.showing')} <span className="font-semibold text-slate-700 dark:text-slate-200">{rangeStart}–{rangeEnd}</span>{' '}
+                        {t('table.of')} <span className="font-semibold text-slate-700 dark:text-slate-200">{total}</span>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
+                        <label className="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
+                            {t('table.rowsPerPage')}
+                            <select
+                                value={pageSize}
+                                onChange={(e) => {
+                                    setPageSize(Number(e.target.value))
+                                    setPage(1)
+                                }}
+                                className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-sm text-slate-700 outline-none focus:border-teal-500 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
+                            >
+                                {PAGE_SIZE_OPTIONS.map((size) => (
+                                    <option key={size} value={size}>{size}</option>
+                                ))}
+                            </select>
+                        </label>
+
+                        {totalPages > 1 && (
+                            <div className="flex items-center gap-1">
+                                <PageButton onClick={() => setPage(1)} disabled={safePage === 1} ariaLabel={t('table.firstPage')}>
+                                    <ChevronsLeft className="h-4 w-4" />
+                                </PageButton>
+                                <PageButton onClick={() => setPage(safePage - 1)} disabled={safePage === 1} ariaLabel={t('table.previousPage')}>
+                                    <ChevronLeft className="h-4 w-4" />
+                                </PageButton>
+
+                                {getPageWindow(safePage, totalPages).map((p, i) =>
+                                    p === '…' ? (
+                                        <span key={`gap-${i}`} className="px-2 text-sm text-slate-400">…</span>
+                                    ) : (
+                                        <button
+                                            key={p}
+                                            type="button"
+                                            onClick={() => setPage(p)}
+                                            aria-current={p === safePage ? 'page' : undefined}
+                                            className={`min-w-9 rounded-lg px-3 py-1.5 text-sm font-medium transition ${
+                                                p === safePage
+                                                    ? 'bg-teal-600 text-white'
+                                                    : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800'
+                                            }`}
+                                        >
+                                            {p}
+                                        </button>
+                                    )
+                                )}
+
+                                <PageButton onClick={() => setPage(safePage + 1)} disabled={safePage === totalPages} ariaLabel={t('table.nextPage')}>
+                                    <ChevronRight className="h-4 w-4" />
+                                </PageButton>
+                                <PageButton onClick={() => setPage(totalPages)} disabled={safePage === totalPages} ariaLabel={t('table.lastPage')}>
+                                    <ChevronsRight className="h-4 w-4" />
+                                </PageButton>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            )}
         </div>
+    )
+}
+
+function ColumnPicker({ columns, hiddenColumns, onToggle, onReset }) {
+    const { t } = useTranslation()
+    const [open, setOpen] = useState(false)
+    const [coords, setCoords] = useState({ top: 0, left: 0 })
+    const triggerRef = useRef(null)
+    const menuRef = useRef(null)
+    const WIDTH = 224
+
+    // Anchored with position: fixed so the table card's overflow-hidden can't clip it.
+    useLayoutEffect(() => {
+        if (!open) return
+        const rect = triggerRef.current?.getBoundingClientRect()
+        if (!rect) return
+        const margin = 8
+        let left = rect.right - WIDTH
+        const maxLeft = window.innerWidth - WIDTH - margin
+        if (left > maxLeft) left = maxLeft
+        if (left < margin) left = margin
+        setCoords({ top: rect.bottom + 4, left })
+    }, [open])
+
+    useEffect(() => {
+        if (!open) return
+        const close = () => setOpen(false)
+        const onKeyDown = (event) => event.key === 'Escape' && setOpen(false)
+        const onPointerDown = (event) => {
+            if (menuRef.current?.contains(event.target) || triggerRef.current?.contains(event.target)) return
+            setOpen(false)
+        }
+        // Close when the page scrolls (the fixed menu would otherwise detach from its trigger),
+        // but ignore scrolling that happens inside the menu's own column list.
+        const onScroll = (event) => {
+            if (menuRef.current?.contains(event.target)) return
+            setOpen(false)
+        }
+        document.addEventListener('keydown', onKeyDown)
+        document.addEventListener('mousedown', onPointerDown)
+        window.addEventListener('scroll', onScroll, true)
+        window.addEventListener('resize', close)
+        return () => {
+            document.removeEventListener('keydown', onKeyDown)
+            document.removeEventListener('mousedown', onPointerDown)
+            window.removeEventListener('scroll', onScroll, true)
+            window.removeEventListener('resize', close)
+        }
+    }, [open])
+
+    const allVisible = hiddenColumns.length === 0
+
+    return (
+        <>
+            <button
+                ref={triggerRef}
+                type="button"
+                onClick={() => setOpen((value) => !value)}
+                aria-haspopup="menu"
+                aria-expanded={open}
+                className={`inline-flex items-center gap-2 rounded-lg border px-3 py-1.5 text-sm font-medium transition ${
+                    open
+                        ? 'border-teal-500 bg-teal-50 text-teal-600 dark:border-teal-500 dark:bg-teal-500/10 dark:text-teal-300'
+                        : 'border-slate-200 text-slate-500 hover:bg-slate-100 hover:text-slate-700 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-200'
+                }`}
+            >
+                <SlidersHorizontal className="h-4 w-4" /> {t('table.columns')}
+            </button>
+
+            {open && (
+                <div
+                    ref={menuRef}
+                    role="menu"
+                    style={{ position: 'fixed', top: coords.top, left: coords.left, width: WIDTH }}
+                    className="z-[60] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl ring-1 ring-black/5 dark:border-slate-700 dark:bg-slate-800"
+                >
+                    <div className="px-3 py-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                        {t('table.showColumns')}
+                    </div>
+                    <div className="max-h-72 overflow-y-auto border-y border-slate-200 py-1 dark:border-slate-700">
+                        {columns.map((column) => (
+                            <label
+                                key={column.key}
+                                className="flex cursor-pointer items-center gap-3 px-3 py-2 text-sm text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-700/60"
+                            >
+                                <input
+                                    type="checkbox"
+                                    checked={!hiddenColumns.includes(column.key)}
+                                    onChange={() => onToggle(column.key)}
+                                    className="h-4 w-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500 dark:border-slate-600 dark:bg-slate-900"
+                                />
+                                <span>{column.name}</span>
+                            </label>
+                        ))}
+                    </div>
+                    <button
+                        type="button"
+                        onClick={onReset}
+                        disabled={allVisible}
+                        className="w-full px-3 py-2 text-left text-sm font-medium text-teal-600 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:text-slate-400 dark:text-teal-400 dark:hover:bg-slate-700/60 dark:disabled:text-slate-500"
+                    >
+                        {t('table.reset')}
+                    </button>
+                </div>
+            )}
+        </>
+    )
+}
+
+function PageButton({ onClick, disabled, ariaLabel, children }) {
+    return (
+        <button
+            type="button"
+            onClick={onClick}
+            disabled={disabled}
+            aria-label={ariaLabel}
+            className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-600 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40 dark:text-slate-300 dark:hover:bg-slate-800"
+        >
+            {children}
+        </button>
     )
 }

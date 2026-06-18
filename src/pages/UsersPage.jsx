@@ -1,16 +1,29 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import { apiDelete, apiGet, apiPost, apiPut } from '../api/client'
 import { useAuth } from '../context/AuthContext'
+import { useToast } from '../context/ToastContext'
 import PageHeader from '../components/PageHeader'
 import SearchFilters from '../components/SearchFilters'
 import DataTable from '../components/DataTable'
+import DataToolbar from '../components/DataToolbar'
+import StatusBadge from '../components/StatusBadge'
 import ActionMenu from '../components/ActionMenu'
 import Modal from '../components/Modal'
 import ConfirmModal from '../components/ConfirmModal'
 import { useModal } from '../hooks/useModal'
 import { safeArray } from '../utils/format'
-import { FormField, SelectField } from '../components/FormField.jsx'
-import { Pencil, Trash2, Archive, ArchiveRestore } from 'lucide-react'
+import { FormField, FormSelect } from '../components/FormField.jsx'
+import { PERMISSION_MODULES } from '../constants/modules'
+import { Pencil, Trash2, Archive, ArchiveRestore, ShieldCheck, User } from 'lucide-react'
+
+const PERMISSION_ACTIONS = [
+    { key: 'canView', labelKey: 'users.perm.view' },
+    { key: 'canCreate', labelKey: 'users.perm.create' },
+    { key: 'canEdit', labelKey: 'users.perm.edit' },
+    { key: 'canDelete', labelKey: 'users.perm.delete' },
+]
 
 const emptyForm = {
     email: '',
@@ -31,21 +44,36 @@ const ROLE_BADGE = {
     USER: 'bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300',
 }
 
+const exportColumns = [
+    { header: 'ID', value: (r) => r.id },
+    { header: 'Name', value: (r) => r.fullName },
+    { header: 'Email', value: (r) => r.email },
+    { header: 'Role', value: (r) => ROLE_LABELS[r.role] || r.role },
+    { header: 'Status', value: (r) => (r.archived ? 'Archived' : 'Active') },
+]
+
 export default function UsersPage() {
+    const { t } = useTranslation()
     const { user: currentUser } = useAuth()
+    const toast = useToast()
+    const navigate = useNavigate()
 
     const formModal = useModal()
     const deleteModal = useModal()
     const bulkDeleteModal = useModal()
+    const permModal = useModal()
 
     const [rows, setRows] = useState([])
+    const [permUser, setPermUser] = useState(null)
+    const [permRows, setPermRows] = useState([])
+    const [permLoading, setPermLoading] = useState(false)
     const [form, setForm] = useState(emptyForm)
     const [editingId, setEditingId] = useState(null)
     const [deletingItem, setDeletingItem] = useState(null)
     const [selectedIds, setSelectedIds] = useState([])
     const [search, setSearch] = useState('')
-    const [statusFilter, setStatusFilter] = useState('')
-    const [roleFilter, setRoleFilter] = useState('')
+    const [statusFilter, setStatusFilter] = useState([])
+    const [roleFilter, setRoleFilter] = useState([])
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState('')
 
@@ -67,11 +95,9 @@ export default function UsersPage() {
                 row.email?.toLowerCase().includes(q)
 
             const matchesStatus =
-                !statusFilter ||
-                (statusFilter === 'active' && !row.archived) ||
-                (statusFilter === 'archived' && row.archived)
+                statusFilter.length === 0 || statusFilter.includes(row.archived ? 'archived' : 'active')
 
-            const matchesRole = !roleFilter || row.role === roleFilter
+            const matchesRole = roleFilter.length === 0 || roleFilter.includes(row.role)
 
             return matchesSearch && matchesStatus && matchesRole
         })
@@ -125,12 +151,13 @@ export default function UsersPage() {
                     password: form.password,
                 })
             }
+            toast.success(editingId ? t('users.updated') : t('users.created'))
             formModal.close()
             setEditingId(null)
             setForm(emptyForm)
             await loadData()
         } catch (err) {
-            setError(err.message || 'Could not save user')
+            setError(err.message || t('users.couldNotSave'))
         } finally {
             setLoading(false)
         }
@@ -141,6 +168,7 @@ export default function UsersPage() {
         setLoading(true)
         try {
             await apiDelete(`/users/${deletingItem.id}`)
+            toast.success(t('users.deleted'))
             deleteModal.close()
             setDeletingItem(null)
             setSelectedIds((prev) => prev.filter((id) => id !== deletingItem.id))
@@ -152,7 +180,58 @@ export default function UsersPage() {
 
     const handleArchiveToggle = async (item) => {
         await apiPut(`/users/${item.id}/${item.archived ? 'unarchive' : 'archive'}`, {})
+        toast.success(item.archived ? t('users.unarchived') : t('users.archived'))
         await loadData()
+    }
+
+    const openPermissions = async (item) => {
+        setError('')
+        setPermUser(item)
+        setPermRows([])
+        permModal.open()
+        setPermLoading(true)
+        try {
+            const response = await apiGet(`/users/${item.id}/permissions`)
+            setPermRows(safeArray(response))
+        } catch (err) {
+            setError(err.message || t('users.couldNotLoadPermissions'))
+        } finally {
+            setPermLoading(false)
+        }
+    }
+
+    // Toggle one flag, keeping the row coherent: any write permission implies view, and removing
+    // view removes the writes that depend on it.
+    const togglePermission = (module, action, checked) => {
+        setPermRows((prev) =>
+            prev.map((row) => {
+                if (row.module !== module) return row
+                const next = { ...row, [action]: checked }
+                if (action === 'canView' && !checked) {
+                    next.canCreate = false
+                    next.canEdit = false
+                    next.canDelete = false
+                } else if (action !== 'canView' && checked) {
+                    next.canView = true
+                }
+                return next
+            })
+        )
+    }
+
+    const handleSavePermissions = async () => {
+        if (!permUser) return
+        setPermLoading(true)
+        try {
+            await apiPut(`/users/${permUser.id}/permissions`, { permissions: permRows })
+            toast.success(t('users.permissionsUpdated'))
+            permModal.close()
+            setPermUser(null)
+        } catch (err) {
+            setError(err.message || t('users.couldNotSavePermissions'))
+        } finally {
+            setPermLoading(false)
+        }
     }
 
     const isOwnerRow = (row) => row.role === 'OWNER'
@@ -169,6 +248,7 @@ export default function UsersPage() {
             await Promise.all(
                 targets.map((row) => apiPut(`/users/${row.id}/${archived ? 'archive' : 'unarchive'}`, {}))
             )
+            toast.success(archived ? t('users.bulkArchived', { count: targets.length }) : t('users.bulkUnarchived', { count: targets.length }))
             await loadData()
         } finally {
             setLoading(false)
@@ -180,6 +260,7 @@ export default function UsersPage() {
         setLoading(true)
         try {
             await Promise.all(selectedIds.map((id) => apiDelete(`/users/${id}`)))
+            toast.success(t('users.bulkDeleted', { count: selectedIds.length }))
             bulkDeleteModal.close()
             setSelectedIds([])
             await loadData()
@@ -189,25 +270,21 @@ export default function UsersPage() {
     }
 
     const columns = [
-        { key: 'fullName', label: 'Name', render: (row) => row.fullName || '-' },
-        { key: 'email', label: 'Email' },
+        { key: 'fullName', label: t('users.cols.name'), render: (row) => row.fullName || '-' },
+        { key: 'email', label: t('common.email') },
         {
             key: 'role',
-            label: 'Role',
+            label: t('users.cols.role'),
             render: (row) => (
                 <span className={`rounded-full px-3 py-1 text-xs font-semibold ${ROLE_BADGE[row.role] || ROLE_BADGE.USER}`}>
-                    {ROLE_LABELS[row.role] || row.role}
+                    {t(`roles.${row.role}`)}
                 </span>
             ),
         },
         {
             key: 'archived',
-            label: 'Status',
-            render: (row) => (
-                <span className={`rounded-full px-3 py-1 text-xs font-semibold ${row.archived ? 'bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300' : 'bg-emerald-100 text-emerald-700'}`}>
-                    {row.archived ? 'Archived' : 'Active'}
-                </span>
-            ),
+            label: t('common.status'),
+            render: (row) => <StatusBadge status={row.archived ? 'ARCHIVED' : 'ACTIVE'} />,
         },
         {
             key: 'actions',
@@ -215,21 +292,24 @@ export default function UsersPage() {
             render: (row) => (
                 <div className="flex justify-end">
                     <ActionMenu
-                        emptyLabel={isOwnerRow(row) ? 'Owner account' : isSelfRow(row) ? 'You' : undefined}
-                        actions={
-                            isOwnerRow(row) || isSelfRow(row)
+                        actions={[
+                            { key: 'profile', label: t('users.viewProfile'), icon: User, onClick: () => navigate(`/users/${row.id}`) },
+                            ...(isOwnerRow(row) || isSelfRow(row)
                                 ? []
                                 : [
-                                    { key: 'edit', label: 'Edit', icon: Pencil, onClick: () => openEdit(row) },
+                                    { key: 'edit', label: t('common.edit'), icon: Pencil, onClick: () => openEdit(row) },
+                                    ...(row.role === 'USER'
+                                        ? [{ key: 'permissions', label: t('users.permissions'), icon: ShieldCheck, onClick: () => openPermissions(row) }]
+                                        : []),
                                     {
                                         key: 'archive',
-                                        label: row.archived ? 'Unarchive' : 'Archive',
+                                        label: row.archived ? t('users.unarchive') : t('users.archive'),
                                         icon: row.archived ? ArchiveRestore : Archive,
                                         onClick: () => handleArchiveToggle(row),
                                     },
-                                    { key: 'delete', label: 'Delete', icon: Trash2, danger: true, onClick: () => openDelete(row) },
-                                ]
-                        }
+                                    { key: 'delete', label: t('common.delete'), icon: Trash2, danger: true, onClick: () => openDelete(row) },
+                                ]),
+                        ]}
                     />
                 </div>
             ),
@@ -239,12 +319,19 @@ export default function UsersPage() {
     return (
         <div className="space-y-6">
             <PageHeader
-                title="Users"
-                description="Manage the accounts that can sign in to your company."
+                title={t('users.title')}
+                description={t('users.description')}
                 action={
-                    <button onClick={openCreate} className="rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-teal-700">
-                        Add user
-                    </button>
+                    <div className="flex flex-wrap items-center gap-2">
+                        <DataToolbar
+                            entityLabel="users"
+                            exportColumns={exportColumns}
+                            rows={filteredRows}
+                        />
+                        <button onClick={openCreate} className="rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-teal-700">
+                            {t('users.add')}
+                        </button>
+                    </div>
                 }
             />
 
@@ -256,33 +343,35 @@ export default function UsersPage() {
                         key: 'role',
                         value: roleFilter,
                         onChange: setRoleFilter,
+                        placeholder: t('users.filters.allRoles'),
                         options: [
-                            { value: '', label: 'All roles' },
-                            { value: 'OWNER', label: 'Owner' },
-                            { value: 'ADMINISTRATOR', label: 'Administrator' },
-                            { value: 'USER', label: 'User' },
+                            { value: 'OWNER', label: t('roles.OWNER') },
+                            { value: 'ADMINISTRATOR', label: t('roles.ADMINISTRATOR') },
+                            { value: 'USER', label: t('roles.USER') },
                         ],
                     },
                     {
                         key: 'status',
                         value: statusFilter,
                         onChange: setStatusFilter,
+                        placeholder: t('common.allStatuses'),
                         options: [
-                            { value: '', label: 'All statuses' },
-                            { value: 'active', label: 'Active' },
-                            { value: 'archived', label: 'Archived' },
+                            { value: 'active', label: t('users.filters.active') },
+                            { value: 'archived', label: t('users.filters.archived') },
                         ],
                     },
                 ]}
             />
 
             <DataTable
+                tableId="users"
                 columns={columns}
                 rows={filteredRows}
                 selectable
                 selectedIds={selectedIds}
                 onSelectionChange={setSelectedIds}
                 isRowSelectable={isSelectableRow}
+                onRowClick={(row) => navigate(`/users/${row.id}`)}
                 bulkActions={
                     <>
                         <button
@@ -290,27 +379,27 @@ export default function UsersPage() {
                             disabled={loading}
                             className="inline-flex items-center gap-2 rounded-lg bg-amber-500 px-3 py-1.5 text-sm font-medium text-white hover:bg-amber-600 disabled:opacity-60"
                         >
-                            <Archive className="h-4 w-4" /> Archive
+                            <Archive className="h-4 w-4" /> {t('users.archive')}
                         </button>
                         <button
                             onClick={() => handleBulkArchive(false)}
                             disabled={loading}
                             className="inline-flex items-center gap-2 rounded-lg bg-slate-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-60"
                         >
-                            <ArchiveRestore className="h-4 w-4" /> Unarchive
+                            <ArchiveRestore className="h-4 w-4" /> {t('users.unarchive')}
                         </button>
                         <button
                             onClick={bulkDeleteModal.open}
                             disabled={loading}
                             className="inline-flex items-center gap-2 rounded-lg bg-rose-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-rose-700 disabled:opacity-60"
                         >
-                            <Trash2 className="h-4 w-4" /> Delete
+                            <Trash2 className="h-4 w-4" /> {t('common.delete')}
                         </button>
                     </>
                 }
             />
 
-            <Modal isOpen={formModal.isOpen} title={editingId ? 'Edit user' : 'Add user'} onClose={formModal.close} width="max-w-xl">
+            <Modal isOpen={formModal.isOpen} title={editingId ? t('users.editTitle') : t('users.addTitle')} onClose={formModal.close} width="max-w-xl">
                 <form onSubmit={handleSubmit} className="grid gap-4">
                     {error && (
                         <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-300">
@@ -320,46 +409,54 @@ export default function UsersPage() {
 
                     <FormField
                         id="user-email"
-                        label="Email"
+                        label={t('common.email')}
                         name="email"
                         type="email"
                         value={form.email}
                         onChange={handleChange}
                         required={!editingId}
-                        placeholder="user@company.com"
+                        placeholder={t('users.form.emailPlaceholder')}
                         disabled={!!editingId}
                     />
 
                     <FormField
                         id="user-full-name"
-                        label="Full name"
+                        label={t('users.form.fullName')}
                         name="fullName"
                         value={form.fullName}
                         onChange={handleChange}
-                        placeholder="Full name"
+                        placeholder={t('users.form.fullNamePlaceholder')}
                     />
 
-                    <SelectField
+                    <FormSelect
                         id="user-role"
-                        label="Role"
+                        label={t('users.form.role')}
                         name="role"
                         value={form.role}
                         onChange={handleChange}
                         required
-                    >
-                        <option value="USER">User</option>
-                        <option value="ADMINISTRATOR">Administrator</option>
-                    </SelectField>
+                        placeholder={t('users.form.selectRole')}
+                        options={[
+                            { value: 'USER', label: t('roles.USER') },
+                            { value: 'ADMINISTRATOR', label: t('roles.ADMINISTRATOR') },
+                        ]}
+                    />
+
+                    {!editingId && form.role === 'USER' && (
+                        <p className="-mt-2 text-xs text-slate-500 dark:text-slate-400">
+                            {t('users.form.newUserHint')}
+                        </p>
+                    )}
 
                     <FormField
                         id="user-password"
-                        label={editingId ? 'New password (leave blank to keep current)' : 'Password'}
+                        label={editingId ? t('users.form.newPassword') : t('users.form.password')}
                         name="password"
                         type="password"
                         value={form.password}
                         onChange={handleChange}
                         required={!editingId}
-                        placeholder={editingId ? 'Leave blank to keep current' : 'At least 6 characters'}
+                        placeholder={editingId ? t('users.form.keepCurrent') : t('users.form.passwordHint')}
                         autoComplete="new-password"
                     />
 
@@ -369,14 +466,14 @@ export default function UsersPage() {
                             onClick={formModal.close}
                             className="rounded-xl border border-slate-300 px-4 py-2.5 dark:border-slate-700"
                         >
-                            Cancel
+                            {t('common.cancel')}
                         </button>
                         <button
                             type="submit"
                             disabled={loading}
                             className="rounded-xl bg-teal-600 px-4 py-2.5 font-medium text-white hover:bg-teal-700 disabled:opacity-60"
                         >
-                            {loading ? 'Saving...' : editingId ? 'Save changes' : 'Create user'}
+                            {loading ? t('common.saving') : editingId ? t('common.saveChanges') : t('users.createBtn')}
                         </button>
                     </div>
                 </form>
@@ -384,8 +481,8 @@ export default function UsersPage() {
 
             <ConfirmModal
                 isOpen={deleteModal.isOpen}
-                title="Delete user"
-                message={`Delete "${deletingItem?.email || ''}"? This cannot be undone.`}
+                title={t('users.deleteTitle')}
+                message={t('users.deleteConfirm', { email: deletingItem?.email || '' })}
                 onClose={deleteModal.close}
                 onConfirm={handleDelete}
                 loading={loading}
@@ -393,12 +490,86 @@ export default function UsersPage() {
 
             <ConfirmModal
                 isOpen={bulkDeleteModal.isOpen}
-                title="Delete users"
-                message={`Delete ${selectedIds.length} selected user${selectedIds.length === 1 ? '' : 's'}? This cannot be undone.`}
+                title={t('users.bulkDeleteTitle')}
+                message={t('users.bulkDeleteConfirm', { count: selectedIds.length })}
                 onClose={bulkDeleteModal.close}
                 onConfirm={handleBulkDelete}
                 loading={loading}
             />
+
+            <Modal
+                isOpen={permModal.isOpen}
+                title={permUser ? t('users.perm.title', { name: permUser.fullName || permUser.email }) : t('users.permissions')}
+                onClose={permModal.close}
+                width="max-w-3xl"
+            >
+                <div className="space-y-4">
+                    <p className="text-sm text-slate-500 dark:text-slate-400">
+                        {t('users.perm.intro')}
+                    </p>
+
+                    {error && (
+                        <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-300">
+                            {error}
+                        </div>
+                    )}
+
+                    {permLoading && permRows.length === 0 ? (
+                        <p className="py-6 text-center text-sm text-slate-500">{t('users.perm.loading')}</p>
+                    ) : (
+                        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800">
+                            <table className="w-full text-sm">
+                                <thead>
+                                    <tr className="border-b border-slate-200 bg-slate-50 text-left dark:border-slate-800 dark:bg-slate-900">
+                                        <th className="px-4 py-3 font-semibold">{t('users.perm.area')}</th>
+                                        {PERMISSION_ACTIONS.map((action) => (
+                                            <th key={action.key} className="px-4 py-3 text-center font-semibold">{t(action.labelKey)}</th>
+                                        ))}
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {permRows.map((row) => {
+                                        const meta = PERMISSION_MODULES.find((m) => m.module === row.module)
+                                        return (
+                                            <tr key={row.module} className="border-b border-slate-100 last:border-0 dark:border-slate-800/60">
+                                                <td className="px-4 py-3 font-medium">{meta ? t(`nav.${meta.navKey}`) : row.module}</td>
+                                                {PERMISSION_ACTIONS.map((action) => (
+                                                    <td key={action.key} className="px-4 py-3 text-center">
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={!!row[action.key]}
+                                                            onChange={(e) => togglePermission(row.module, action.key, e.target.checked)}
+                                                            className="h-4 w-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500 dark:border-slate-700"
+                                                        />
+                                                    </td>
+                                                ))}
+                                            </tr>
+                                        )
+                                    })}
+                                </tbody>
+                            </table>
+                        </div>
+                    )}
+
+                    <div className="flex justify-end gap-3">
+                        <button
+                            type="button"
+                            onClick={permModal.close}
+                            className="rounded-xl border border-slate-300 px-4 py-2.5 dark:border-slate-700"
+                        >
+                            {t('common.cancel')}
+                        </button>
+                        <button
+                            type="button"
+                            onClick={handleSavePermissions}
+                            disabled={permLoading}
+                            className="rounded-xl bg-teal-600 px-4 py-2.5 font-medium text-white hover:bg-teal-700 disabled:opacity-60"
+                        >
+                            {permLoading ? t('common.saving') : t('users.perm.save')}
+                        </button>
+                    </div>
+                </div>
+            </Modal>
         </div>
     )
 }

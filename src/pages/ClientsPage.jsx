@@ -1,15 +1,44 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import { apiDelete, apiGet, apiPost, apiPut } from '../api/client'
 import PageHeader from '../components/PageHeader'
 import SearchFilters from '../components/SearchFilters'
 import DataTable from '../components/DataTable'
+import DataToolbar from '../components/DataToolbar'
+import StatusBadge from '../components/StatusBadge'
 import ActionMenu from '../components/ActionMenu'
 import Modal from '../components/Modal'
 import ConfirmModal from '../components/ConfirmModal'
 import { useModal } from '../hooks/useModal'
-import { safeArray } from '../utils/format'
+import { usePermissions } from '../context/AuthContext'
+import { useToast } from '../context/ToastContext'
+import { safeArray, parseBool } from '../utils/format'
 import {FormField, TextareaField} from "../components/FormField.jsx";
-import { Pencil, Trash2 } from 'lucide-react'
+import { Eye, Pencil, Trash2 } from 'lucide-react'
+
+const exportColumns = [
+    { header: 'ID', value: (r) => r.id },
+    { header: 'Name', value: (r) => r.name },
+    { header: 'Registration code', value: (r) => r.registrationCode },
+    { header: 'Email', value: (r) => r.email },
+    { header: 'Phone', value: (r) => r.phone },
+    { header: 'Address', value: (r) => r.address },
+    { header: 'Contact person', value: (r) => r.contactPerson },
+    { header: 'Notes', value: (r) => r.notes },
+    { header: 'Active', value: (r) => (r.active ? 'Active' : 'Inactive') },
+]
+
+const importColumns = [
+    { header: 'Name', required: true, example: 'City Hospital' },
+    { header: 'Registration code', example: '12345678' },
+    { header: 'Email', example: 'procurement@hospital.gov' },
+    { header: 'Phone', example: '+372 555 1234' },
+    { header: 'Address', example: '' },
+    { header: 'Contact person', example: 'Jane Doe' },
+    { header: 'Notes', example: '' },
+    { header: 'Active', example: 'Active' },
+]
 
 const emptyForm = {
     name: '',
@@ -23,6 +52,27 @@ const emptyForm = {
 }
 
 export default function ClientsPage() {
+    const { t } = useTranslation()
+    const { canCreate, canEdit, canDelete } = usePermissions('CLIENTS')
+    const toast = useToast()
+    const navigate = useNavigate()
+    const parseImportRow = (r) => {
+        const name = (r['Name'] || '').trim()
+        if (!name) return { error: t('clients.import.nameRequired') }
+        return {
+            payload: {
+                name,
+                registrationCode: r['Registration code'] || '',
+                email: r['Email'] || '',
+                phone: r['Phone'] || '',
+                address: r['Address'] || '',
+                contactPerson: r['Contact person'] || '',
+                notes: r['Notes'] || '',
+                active: parseBool(r['Active'], true),
+            },
+        }
+    }
+    const [searchParams, setSearchParams] = useSearchParams()
     const formModal = useModal()
     const deleteModal = useModal()
     const bulkDeleteModal = useModal()
@@ -33,12 +83,29 @@ export default function ClientsPage() {
     const [deletingItem, setDeletingItem] = useState(null)
     const [selectedIds, setSelectedIds] = useState([])
     const [search, setSearch] = useState('')
-    const [statusFilter, setStatusFilter] = useState('')
+    const [statusFilter, setStatusFilter] = useState([])
     const [loading, setLoading] = useState(false)
 
     useEffect(() => {
         loadData()
     }, [])
+
+    // Deep-link support: ?edit=<id> opens the edit modal once rows are loaded (used by the detail
+    // page's Edit button), then clears the param so a refresh/back doesn't reopen it.
+    const editId = searchParams.get('edit')
+    useEffect(() => {
+        if (!editId || rows.length === 0) return
+        const item = rows.find((r) => String(r.id) === String(editId))
+        if (item) {
+            openEdit(item)
+            setSearchParams((prev) => {
+                const next = new URLSearchParams(prev)
+                next.delete('edit')
+                return next
+            }, { replace: true })
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [editId, rows])
 
     const loadData = async () => {
         const response = await apiGet('/clients?page=0&size=500&sortBy=id&sortDir=desc')
@@ -56,9 +123,7 @@ export default function ClientsPage() {
                 row.contactPerson?.toLowerCase().includes(q)
 
             const matchesStatus =
-                !statusFilter ||
-                (statusFilter === 'active' && row.active) ||
-                (statusFilter === 'inactive' && !row.active)
+                statusFilter.length === 0 || statusFilter.includes(row.active ? 'active' : 'inactive')
 
             return matchesSearch && matchesStatus
         })
@@ -104,6 +169,7 @@ export default function ClientsPage() {
             } else {
                 await apiPost('/clients', form)
             }
+            toast.success(editingId ? t('clients.updated') : t('clients.created'))
             formModal.close()
             setEditingId(null)
             setForm(emptyForm)
@@ -118,6 +184,7 @@ export default function ClientsPage() {
         setLoading(true)
         try {
             await apiDelete(`/clients/${deletingItem.id}`)
+            toast.success(t('clients.deleted'))
             deleteModal.close()
             setDeletingItem(null)
             setSelectedIds((prev) => prev.filter((id) => id !== deletingItem.id))
@@ -132,6 +199,7 @@ export default function ClientsPage() {
         setLoading(true)
         try {
             await Promise.all(selectedIds.map((id) => apiDelete(`/clients/${id}`)))
+            toast.success(t('clients.bulkDeleted', { count: selectedIds.length }))
             bulkDeleteModal.close()
             setSelectedIds([])
             await loadData()
@@ -141,29 +209,26 @@ export default function ClientsPage() {
     }
 
     const columns = [
-        { key: 'name', label: 'Name' },
-        { key: 'registrationCode', label: 'Reg. code' },
-        { key: 'email', label: 'Email' },
-        { key: 'phone', label: 'Phone' },
-        { key: 'contactPerson', label: 'Contact person' },
+        { key: 'name', label: t('common.name') },
+        { key: 'registrationCode', label: t('clients.regCode') },
+        { key: 'email', label: t('common.email') },
+        { key: 'phone', label: t('common.phone') },
+        { key: 'contactPerson', label: t('clients.contactPerson') },
         {
             key: 'active',
-            label: 'Status',
-            render: (row) => (
-                <span className={`rounded-full px-3 py-1 text-xs font-semibold ${row.active ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300'}`}>
-          {row.active ? 'Active' : 'Inactive'}
-        </span>
-            ),
+            label: t('common.status'),
+            render: (row) => <StatusBadge status={row.active ? 'ACTIVE' : 'INACTIVE'} />,
         },
         {
             key: 'actions',
             label: '',
             render: (row) => (
-                <div className="flex justify-end">
+                <div className="flex justify-end" onClick={(e) => e.stopPropagation()}>
                     <ActionMenu
                         actions={[
-                            { key: 'edit', label: 'Edit', icon: Pencil, onClick: () => openEdit(row) },
-                            { key: 'delete', label: 'Delete', icon: Trash2, danger: true, onClick: () => openDelete(row) },
+                            { key: 'view', label: t('common.viewDetails'), icon: Eye, onClick: () => navigate(`/clients/${row.id}`) },
+                            ...(canEdit ? [{ key: 'edit', label: t('common.edit'), icon: Pencil, onClick: () => openEdit(row) }] : []),
+                            ...(canDelete ? [{ key: 'delete', label: t('common.delete'), icon: Trash2, danger: true, onClick: () => openDelete(row) }] : []),
                         ]}
                     />
                 </div>
@@ -174,12 +239,28 @@ export default function ClientsPage() {
     return (
         <div className="space-y-6">
             <PageHeader
-                title="Clients"
-                description="Manage clients and contracting authorities."
+                title={t('clients.title')}
+                description={t('clients.description')}
                 action={
-                    <button onClick={openCreate} className="rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-teal-700">
-                        Add client
-                    </button>
+                    <div className="flex flex-wrap items-center gap-2">
+                        <DataToolbar
+                            entityLabel="clients"
+                            exportColumns={exportColumns}
+                            rows={filteredRows}
+                            importConfig={{
+                                canImport: canCreate,
+                                endpoint: '/clients',
+                                templateColumns: importColumns,
+                                parseRow: parseImportRow,
+                            }}
+                            onImported={loadData}
+                        />
+                        {canCreate && (
+                            <button onClick={openCreate} className="rounded-xl bg-teal-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-teal-700">
+                                {t('clients.add')}
+                            </button>
+                        )}
+                    </div>
                 }
             />
 
@@ -191,41 +272,45 @@ export default function ClientsPage() {
                         key: 'status',
                         value: statusFilter,
                         onChange: setStatusFilter,
+                        placeholder: t('common.allStatuses'),
                         options: [
-                            { value: '', label: 'All statuses' },
-                            { value: 'active', label: 'Active' },
-                            { value: 'inactive', label: 'Inactive' },
+                            { value: 'active', label: t('common.active') },
+                            { value: 'inactive', label: t('common.inactive') },
                         ],
                     },
                 ]}
             />
 
             <DataTable
+                tableId="clients"
                 columns={columns}
                 rows={filteredRows}
-                selectable
+                selectable={canDelete}
                 selectedIds={selectedIds}
                 onSelectionChange={setSelectedIds}
+                onRowClick={(row) => navigate(`/clients/${row.id}`)}
                 bulkActions={
-                    <button
-                        onClick={bulkDeleteModal.open}
-                        className="inline-flex items-center gap-2 rounded-lg bg-rose-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-rose-700"
-                    >
-                        <Trash2 className="h-4 w-4" /> Delete selected
-                    </button>
+                    canDelete ? (
+                        <button
+                            onClick={bulkDeleteModal.open}
+                            className="inline-flex items-center gap-2 rounded-lg bg-rose-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-rose-700"
+                        >
+                            <Trash2 className="h-4 w-4" /> {t('common.deleteSelected')}
+                        </button>
+                    ) : null
                 }
             />
 
-            <Modal isOpen={formModal.isOpen} title={editingId ? "Edit client" : "Add client"} onClose={formModal.close}>
+            <Modal isOpen={formModal.isOpen} title={editingId ? t('clients.editTitle') : t('clients.addTitle')} onClose={formModal.close}>
                 <form onSubmit={handleSubmit} className="grid gap-4 md:grid-cols-4">
                     <FormField
                         id="client-name"
-                        label="Name"
+                        label={t('common.name')}
                         name="name"
                         value={form.name}
                         onChange={handleChange}
                         required
-                        placeholder="Name"
+                        placeholder={t('common.name')}
                         className="md:col-span-2"
                     />
 
@@ -233,12 +318,12 @@ export default function ClientsPage() {
                         id="client-registration-code"
                         label={
                             <span className="inline-flex items-center gap-2">
-                    Registration code
+                    {t('clients.registrationCode')}
                     <span className="group relative inline-flex">
                         <button
                             type="button"
                             tabIndex={0}
-                            aria-label="What does registration code mean?"
+                            aria-label={t('clients.regCodeTooltipAria')}
                             className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-slate-300 text-xs font-bold text-slate-500 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
                         >
                             ?
@@ -247,7 +332,7 @@ export default function ClientsPage() {
                             role="tooltip"
                             className="pointer-events-none absolute left-1/2 top-full z-20 mt-2 hidden w-56 -translate-x-1/2 rounded-xl bg-slate-900 px-3 py-2 text-xs font-normal text-white shadow-lg group-hover:block group-focus-within:block dark:bg-slate-700"
                         >
-                            Official company registration number from the business register.
+                            {t('clients.regCodeTooltip')}
                         </span>
                     </span>
                 </span>
@@ -255,58 +340,58 @@ export default function ClientsPage() {
                         name="registrationCode"
                         value={form.registrationCode}
                         onChange={handleChange}
-                        placeholder="Registration code"
+                        placeholder={t('clients.registrationCode')}
                         className="md:col-span-2"
                     />
 
                     <FormField
                         id="client-email"
-                        label="Email"
+                        label={t('common.email')}
                         name="email"
                         type="email"
                         value={form.email}
                         onChange={handleChange}
-                        placeholder="Email"
+                        placeholder={t('common.email')}
                         className="md:col-span-2"
                     />
 
                     <FormField
                         id="client-phone"
-                        label="Phone"
+                        label={t('common.phone')}
                         name="phone"
                         value={form.phone}
                         onChange={handleChange}
-                        placeholder="Phone"
+                        placeholder={t('common.phone')}
                         className="md:col-span-2"
                     />
 
                     <FormField
                         id="client-contact-person"
-                        label="Contact person"
+                        label={t('clients.contactPerson')}
                         name="contactPerson"
                         value={form.contactPerson}
                         onChange={handleChange}
-                        placeholder="Contact person"
+                        placeholder={t('clients.contactPerson')}
                         className="md:col-span-2"
                     />
 
                     <FormField
                         id="client-address"
-                        label="Address"
+                        label={t('common.address')}
                         name="address"
                         value={form.address}
                         onChange={handleChange}
-                        placeholder="Address"
+                        placeholder={t('common.address')}
                         className="md:col-span-4"
                     />
 
                     <TextareaField
                         id="client-notes"
-                        label="Notes"
+                        label={t('common.notes')}
                         name="notes"
                         value={form.notes}
                         onChange={handleChange}
-                        placeholder="Notes"
+                        placeholder={t('common.notes')}
                         className="md:col-span-4"
                     />
 
@@ -318,7 +403,7 @@ export default function ClientsPage() {
                             onChange={handleChange}
                             className="h-4 w-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500 dark:border-slate-700"
                         />
-                        <span className="font-medium text-slate-700 dark:text-slate-200">Active</span>
+                        <span className="font-medium text-slate-700 dark:text-slate-200">{t('common.active')}</span>
                     </label>
 
                     <div className="md:col-span-4 flex justify-end gap-3">
@@ -327,14 +412,14 @@ export default function ClientsPage() {
                             onClick={formModal.close}
                             className="rounded-xl border border-slate-300 px-4 py-2.5 dark:border-slate-700"
                         >
-                            Cancel
+                            {t('common.cancel')}
                         </button>
                         <button
                             type="submit"
                             disabled={loading}
                             className="rounded-xl bg-teal-600 px-4 py-2.5 font-medium text-white hover:bg-teal-700 disabled:opacity-60"
                         >
-                            {loading ? "Saving..." : editingId ? "Save changes" : "Create client"}
+                            {loading ? t('common.saving') : editingId ? t('common.saveChanges') : t('clients.createBtn')}
                         </button>
                     </div>
                 </form>
@@ -342,8 +427,8 @@ export default function ClientsPage() {
 
             <ConfirmModal
                 isOpen={deleteModal.isOpen}
-                title="Delete client"
-                message={`Delete "${deletingItem?.name || ''}"?`}
+                title={t('clients.deleteTitle')}
+                message={t('clients.deleteConfirm', { name: deletingItem?.name || '' })}
                 onClose={deleteModal.close}
                 onConfirm={handleDelete}
                 loading={loading}
@@ -351,8 +436,8 @@ export default function ClientsPage() {
 
             <ConfirmModal
                 isOpen={bulkDeleteModal.isOpen}
-                title="Delete clients"
-                message={`Delete ${selectedIds.length} selected client${selectedIds.length === 1 ? '' : 's'}?`}
+                title={t('clients.bulkDeleteTitle')}
+                message={t('clients.bulkDeleteConfirm', { count: selectedIds.length })}
                 onClose={bulkDeleteModal.close}
                 onConfirm={handleBulkDelete}
                 loading={loading}
